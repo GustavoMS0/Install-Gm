@@ -6,9 +6,9 @@
 #    nano glpi-install.conf          # ajuste os valores
 #    sudo bash install-glpi.sh glpi-install.conf
 #
-#  - Toda variável DEFINIDA aqui não será perguntada durante a instalação.
-#  - Deixe comentada (#) a variável que você quer que o script pergunte.
-#  - Senhas em branco = o script pergunta (ou gera, quando indicado).
+#  - Variável DEFINIDA (sem # na frente) não é perguntada na instalação.
+#  - Variável COMENTADA (com #) continua sendo perguntada normalmente.
+#  - Definida porém vazia ("") = usa o valor padrão (senhas: gera automaticamente).
 #  - ATENÇÃO: este arquivo pode conter senhas. Apague-o após a instalação
 #    e nunca faça commit dele (o .gitignore já ignora glpi-install.conf).
 # =============================================================================
@@ -45,11 +45,11 @@
 # Base e usuário que o GLPI vai usar
 #DB_NAME="glpi"
 #DB_USER="glpi"
-# Vazio = pergunta (Enter na pergunta gera uma senha forte automaticamente)
+# Vazio = gera uma senha forte automaticamente (salva em /root/glpi-install-info.txt)
 #DB_PASS=""
 
 # ---------------------------- Primeiro acesso --------------------------------
-# Nova senha do super-admin "glpi" (vazio = pergunta / gera automaticamente)
+# Nova senha do super-admin "glpi" (vazio = gera automaticamente)
 #GLPI_ADMIN_PASS=""
 
 # Desativar os usuários padrão tech, normal e post-only (S/N)

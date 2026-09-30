@@ -17,9 +17,12 @@ Scripts para colocar um **servidor GLPI** no ar em poucos minutos e fazer o **in
 
 > Você pode usar só a parte 1 (o servidor), ou só a parte 2 se já tiver um GLPI funcionando.
 
+> **Início rápido:** para baixar e rodar direto do GitHub, inclusive no modo 100% automático sem perguntas, siga o **[guia de instalação direto do GitHub](INSTALAR-DO-GITHUB.md)**.
+
 ---
 
 ## Sumário
+- [Instalar direto do GitHub (guia separado)](INSTALAR-DO-GITHUB.md)
 - [O que você vai precisar](#o-que-você-vai-precisar)
 - [Parte 1: instalar o servidor GLPI](#parte-1-instalar-o-servidor-glpi)
 - [Parte 2: distribuir o agente pelo Intune](#parte-2-distribuir-o-agente-pelo-intune)
@@ -50,16 +53,16 @@ Scripts para colocar um **servidor GLPI** no ar em poucos minutos e fazer o **in
 
 ### Passo 1: baixar o script no servidor
 
-```bash
-# Opção A: clonar o repositório
-# (repositório privado: use seu usuário do GitHub e um Personal Access Token como senha)
-sudo apt install -y git
-git clone https://github.com/GustavoMS0/Instalador-automatico.git
-cd Instalador-automatico/servidor
+**Direto do GitHub (recomendado).** Como o repositório é privado, é preciso um token de acesso ([como criar](INSTALAR-DO-GITHUB.md#passo-0-criar-um-token-de-acesso-uma-vez)):
 
-# Opção B: copiar só o script a partir do seu computador
-scp servidor/install-glpi.sh usuario@IP-DO-SERVIDOR:~
+```bash
+read -rsp "Token do GitHub: " GH_TOKEN; echo
+curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+  -o install-glpi.sh \
+  https://api.github.com/repos/GustavoMS0/Instalador-automatico/contents/servidor/install-glpi.sh
 ```
+
+**Outras formas:** clonar o repositório inteiro, ou copiar do seu computador com `scp servidor/install-glpi.sh usuario@IP-DO-SERVIDOR:~`. Todas as opções, inclusive a instalação 100% automática, estão em **[INSTALAR-DO-GITHUB.md](INSTALAR-DO-GITHUB.md)**.
 
 ### Passo 2: executar
 
@@ -127,7 +130,7 @@ sudo bash install-glpi.sh glpi-install.conf
 rm glpi-install.conf                # o arquivo contém senhas
 ```
 
-Cada variável preenchida no arquivo deixa de ser perguntada. As que ficarem comentadas continuam sendo perguntadas normalmente. Veja todas as opções em [`servidor/glpi-install.conf.example`](servidor/glpi-install.conf.example).
+Cada variável definida no arquivo deixa de ser perguntada. Se ela estiver vazia (`""`), o script usa o valor padrão ou gera uma senha. As que ficarem comentadas continuam sendo perguntadas normalmente. Veja todas as opções em [`servidor/glpi-install.conf.example`](servidor/glpi-install.conf.example) e exemplos completos em [INSTALAR-DO-GITHUB.md](INSTALAR-DO-GITHUB.md#modo-b-100-automático-com-arquivo-de-configuração).
 
 ### O que o script faz, em detalhe
 
@@ -357,6 +360,8 @@ O agente já envia inventário por conta própria, mas a tarefa agendada garante
 ## Estrutura do repositório
 
 ```
+├── README.md                        Este guia
+├── INSTALAR-DO-GITHUB.md            Baixar e rodar direto do GitHub / modo automático
 ├── servidor/
 │   ├── install-glpi.sh              Instalador do servidor GLPI
 │   └── glpi-install.conf.example    Modelo de configuração (instalação sem perguntas)

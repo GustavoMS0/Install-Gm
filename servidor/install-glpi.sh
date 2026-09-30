@@ -60,10 +60,16 @@ cleanup() { local f; for f in "${TMP_FILES[@]}"; do rm -rf -- "$f"; done; }
 trap cleanup EXIT
 trap 'die "Falha na linha $LINENO: $BASH_COMMAND (log: $LOG_FILE)"' ERR
 
-# ask VAR "Pergunta" "padrão"  -> pula se VAR já estiver definida no ambiente
+# Regra para todas as perguntas: se a variável já estiver DEFINIDA (arquivo de
+# configuração ou ambiente), a pergunta é pulada. Definida porém vazia = padrão.
+
+# ask VAR "Pergunta" "padrão"
 ask() {
   local __var=$1 __prompt=$2 __def=${3-} __ans
-  [[ -n "${!__var-}" ]] && return 0
+  if [[ -n ${!__var+x} ]]; then
+    [[ -z ${!__var} ]] && printf -v "$__var" '%s' "$__def"
+    return 0
+  fi
   if [[ -n $__def ]]; then
     read -rp "  $__prompt [$__def]: " __ans </dev/tty
   else
@@ -75,7 +81,10 @@ ask() {
 # ask_secret VAR "Pergunta" permitir_vazio(0/1) confirmar(0/1)
 ask_secret() {
   local __var=$1 __prompt=$2 __empty=${3:-0} __confirm=${4:-0} __a __b
-  [[ -n "${!__var-}" ]] && return 0
+  if [[ -n ${!__var+x} ]]; then
+    [[ -n ${!__var} || $__empty == 1 ]] || die "$__var não pode ser vazia."
+    return 0
+  fi
   while true; do
     read -rsp "  $__prompt: " __a </dev/tty; echo
     if [[ -z $__a && $__empty != 1 ]]; then warn "O valor não pode ser vazio."; continue; fi
@@ -92,8 +101,8 @@ ask_secret() {
 ask_yn() {
   local __var=$1 __prompt=$2 __def=${3:-S} __ans __hint="S/n"
   [[ $__def == N ]] && __hint="s/N"
-  if [[ -n "${!__var-}" ]]; then
-    __ans=${!__var}
+  if [[ -n ${!__var+x} ]]; then
+    __ans=${!__var:-$__def}
   else
     read -rp "  $__prompt [$__hint]: " __ans </dev/tty
     __ans=${__ans:-$__def}
