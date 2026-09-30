@@ -21,7 +21,7 @@ Este guia mostra como **baixar e executar os scripts direto deste repositório**
 ### Modo A: interativo (o script pergunta tudo)
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Instalador-automatico/main/servidor/install-glpi.sh
+curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servidor/install-glpi.sh
 sudo bash install-glpi.sh
 ```
 
@@ -31,7 +31,7 @@ Responda às perguntas (Enter aceita o padrão) e confirme. Veja o que cada perg
 <summary>Prefere executar sem salvar o arquivo?</summary>
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GustavoMS0/Instalador-automatico/main/servidor/install-glpi.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servidor/install-glpi.sh | sudo bash
 ```
 
 As perguntas continuam funcionando normalmente. Ainda assim, **baixar primeiro é mais seguro**: você pode ler o script antes de rodar como root (`less install-glpi.sh`).
@@ -44,7 +44,7 @@ Ideal para quando você já sabe todos os valores e quer que a instalação rode
 **1. Baixe o script e o modelo de configuração:**
 
 ```bash
-BASE=https://raw.githubusercontent.com/GustavoMS0/Instalador-automatico/main/servidor
+BASE=https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servidor
 curl -fsSLO "$BASE/install-glpi.sh"
 curl -fsSL  "$BASE/glpi-install.conf.example" -o glpi-install.conf
 chmod 600 glpi-install.conf
@@ -114,7 +114,7 @@ sudo cat /root/glpi-install-info.txt      # senhas geradas e URL do agente
 Os mesmos valores do modo B podem ser passados direto no comando, sem arquivo:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Instalador-automatico/main/servidor/install-glpi.sh \
+curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servidor/install-glpi.sh \
 && sudo GLPI_FQDN="glpi.suaempresa.local" GLPI_PORT="80" \
         DB_LOCAL="S" DB_ADMIN_USER="root" DB_ADMIN_PASS="" \
         DB_NAME="glpi" DB_USER="glpi" DB_PASS="" \
@@ -130,8 +130,8 @@ curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Instalador-automatico/m
 
 ```bash
 sudo apt install -y git
-git clone https://github.com/GustavoMS0/Instalador-automatico.git
-cd Instalador-automatico/servidor
+git clone https://github.com/GustavoMS0/Install-Gm.git
+cd Install-Gm/servidor
 sudo bash install-glpi.sh                       # interativo
 # ou: sudo bash install-glpi.sh glpi-install.conf   (automático)
 ```
@@ -146,11 +146,11 @@ Cole no PowerShell, trocando a URL do servidor na última linha:
 
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$dest = "$env:USERPROFILE\Instalador-automatico"
+$dest = "$env:USERPROFILE\Install-Gm"
 $zip  = "$env:TEMP\instalador.zip"; $tmp = "$env:TEMP\instalador"
 Remove-Item $dest, $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Invoke-WebRequest -UseBasicParsing -OutFile $zip `
-  -Uri 'https://github.com/GustavoMS0/Instalador-automatico/archive/refs/heads/main.zip'
+  -Uri 'https://github.com/GustavoMS0/Install-Gm/archive/refs/heads/main.zip'
 Expand-Archive $zip $tmp -Force
 Get-ChildItem $tmp -Directory | Select-Object -First 1 | Move-Item -Destination $dest
 Remove-Item $zip, $tmp -Recurse -Force
@@ -165,12 +165,12 @@ powershell -ExecutionPolicy Bypass -File .\Build-IntunePackage.ps1 -ServerUrl 'h
 
 ```powershell
 cd $env:USERPROFILE
-git clone https://github.com/GustavoMS0/Instalador-automatico.git
-cd .\Instalador-automatico\intune
+git clone https://github.com/GustavoMS0/Install-Gm.git
+cd .\Install-Gm\intune
 powershell -ExecutionPolicy Bypass -File .\Build-IntunePackage.ps1 -ServerUrl 'http://glpi.suaempresa.local/front/inventory.php'
 ```
 
-Para atualizar depois: `cd $env:USERPROFILE\Instalador-automatico; git pull`
+Para atualizar depois: `cd $env:USERPROFILE\Install-Gm; git pull`
 
 O pacote fica em `intune\output\`. Siga para [Criar o app no Intune](README.md#passo-2-criar-o-app-no-intune).
 
@@ -182,7 +182,7 @@ Os comandos acima baixam a versão mais recente do instalador, na branch `main`.
 
 ```bash
 # Exemplo com uma tag de release (ex.: v1.0.0)
-curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Instalador-automatico/v1.0.0/servidor/install-glpi.sh
+curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/v1.0.0/servidor/install-glpi.sh
 ```
 
 > Isso fixa a versão **do instalador**. A versão **do GLPI** é escolhida à parte, com `GLPI_VERSION="11.0.10"` no arquivo de configuração. Sem essa variável, o instalador usa a última versão estável do GLPI.
@@ -194,7 +194,7 @@ curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Instalador-automatico/v
 | Erro | Causa / solução |
 |---|---|
 | `curl: command not found` | Instale com `sudo apt update && sudo apt install -y curl` |
-| `curl: (22) ... 404` | Endereço digitado errado (confira maiúsculas: `GustavoMS0/Instalador-automatico`) ou arquivo renomeado |
+| `curl: (22) ... 404` | Endereço digitado errado (confira maiúsculas: `GustavoMS0/Install-Gm`) ou arquivo renomeado |
 | `curl: (6) Could not resolve host` | Servidor sem DNS ou internet. Teste com `ping -c2 github.com` |
 | `Arquivo de configuração '...' não encontrado` | Rode o comando na mesma pasta do `glpi-install.conf`, ou informe o caminho completo |
 | `/bin/bash^M: bad interpreter` | O arquivo foi editado no Windows. Rode `sed -i 's/\r$//' install-glpi.sh glpi-install.conf` |
