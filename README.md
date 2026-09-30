@@ -54,7 +54,7 @@ Scripts para colocar um **servidor GLPI** no ar em poucos minutos e fazer o **in
 # Opção A: clonar o repositório
 # (repositório privado: use seu usuário do GitHub e um Personal Access Token como senha)
 sudo apt install -y git
-git clone https://github.com/SEU-USUARIO/Instalador-automatico.git
+git clone https://github.com/GustavoMS0/Instalador-automatico.git
 cd Instalador-automatico/servidor
 
 # Opção B: copiar só o script a partir do seu computador
