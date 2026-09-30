@@ -1,0 +1,11 @@
+# Scripts Linux precisam de quebra de linha LF (senão: "/bin/bash^M: bad interpreter")
+*.sh            text eol=lf
+*.conf.example  text eol=lf
+
+# Scripts Windows com CRLF
+*.ps1           text eol=crlf
+
+*.md            text
+*.msi           binary
+*.intunewin     binary
+*.exe           binary

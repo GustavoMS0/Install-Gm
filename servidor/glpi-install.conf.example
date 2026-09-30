@@ -1,0 +1,63 @@
+# =============================================================================
+#  Configuração opcional do install-glpi.sh
+# -----------------------------------------------------------------------------
+#  Uso:
+#    cp glpi-install.conf.example glpi-install.conf
+#    nano glpi-install.conf          # ajuste os valores
+#    sudo bash install-glpi.sh glpi-install.conf
+#
+#  - Toda variável DEFINIDA aqui não será perguntada durante a instalação.
+#  - Deixe comentada (#) a variável que você quer que o script pergunte.
+#  - Senhas em branco = o script pergunta (ou gera, quando indicado).
+#  - ATENÇÃO: este arquivo pode conter senhas. Apague-o após a instalação
+#    e nunca faça commit dele (o .gitignore já ignora glpi-install.conf).
+# =============================================================================
+
+# ---------------------------- Acesso web -------------------------------------
+# Nome DNS ou IP pelo qual os usuários e os agentes acessarão o GLPI
+#GLPI_FQDN="glpi.suaempresa.local"
+
+# Porta HTTP do Apache (80 é o padrão)
+#GLPI_PORT="80"
+
+# Idioma padrão e fuso horário
+#GLPI_LANG="pt_BR"
+#GLPI_TZ="America/Sao_Paulo"
+
+# Fixar uma versão específica do GLPI (vazio = última versão estável)
+#GLPI_VERSION="11.0.10"
+
+# ---------------------------- Banco de dados ---------------------------------
+# S = instala/usa MariaDB neste servidor | N = banco em outro servidor
+#DB_LOCAL="S"
+
+# Somente se DB_LOCAL="N"
+#DB_HOST="10.0.0.20"
+#DB_PORT="3306"
+# Host de origem permitido para o usuário do GLPI (IP deste servidor ou %)
+#DB_USER_HOST="10.0.0.10"
+
+# Usuário ADMINISTRADOR do banco, usado apenas para criar a base e o usuário.
+# Banco local com root: deixe a senha vazia para usar autenticação unix_socket.
+#DB_ADMIN_USER="root"
+#DB_ADMIN_PASS=""
+
+# Base e usuário que o GLPI vai usar
+#DB_NAME="glpi"
+#DB_USER="glpi"
+# Vazio = pergunta (Enter na pergunta gera uma senha forte automaticamente)
+#DB_PASS=""
+
+# ---------------------------- Primeiro acesso --------------------------------
+# Nova senha do super-admin "glpi" (vazio = pergunta / gera automaticamente)
+#GLPI_ADMIN_PASS=""
+
+# Desativar os usuários padrão tech, normal e post-only (S/N)
+#DISABLE_DEFAULT_USERS="S"
+
+# ---------------------------- Automação --------------------------------------
+# S = apaga e reinstala se a base já existir (CUIDADO!)
+#OVERWRITE="N"
+
+# S = não pede a confirmação final (instalação 100% automática)
+#CONFIRM="S"
