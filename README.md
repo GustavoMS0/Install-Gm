@@ -17,7 +17,11 @@ Scripts para colocar um **servidor GLPI** no ar em poucos minutos e fazer o **in
 
 > Você pode usar só a parte 1 (o servidor), ou só a parte 2 se já tiver um GLPI funcionando.
 
-> **Início rápido:** para baixar e rodar direto do GitHub, inclusive no modo 100% automático sem perguntas, siga o **[guia de instalação direto do GitHub](INSTALAR-DO-GITHUB.md)**.
+> **Início rápido:** no servidor Linux, um único comando instala tudo (o script faz as perguntas):
+> ```bash
+> curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Instalador-automatico/main/servidor/install-glpi.sh && sudo bash install-glpi.sh
+> ```
+> Para o modo 100% automático, sem perguntas, veja o **[guia de instalação direto do GitHub](INSTALAR-DO-GITHUB.md)**.
 
 ---
 
@@ -53,16 +57,11 @@ Scripts para colocar um **servidor GLPI** no ar em poucos minutos e fazer o **in
 
 ### Passo 1: baixar o script no servidor
 
-**Direto do GitHub (recomendado).** Como o repositório é privado, é preciso um token de acesso ([como criar](INSTALAR-DO-GITHUB.md#passo-0-criar-um-token-de-acesso-uma-vez)):
-
 ```bash
-read -rsp "Token do GitHub: " GH_TOKEN; echo
-curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
-  -o install-glpi.sh \
-  https://api.github.com/repos/GustavoMS0/Instalador-automatico/contents/servidor/install-glpi.sh
+curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Instalador-automatico/main/servidor/install-glpi.sh
 ```
 
-**Outras formas:** clonar o repositório inteiro, ou copiar do seu computador com `scp servidor/install-glpi.sh usuario@IP-DO-SERVIDOR:~`. Todas as opções, inclusive a instalação 100% automática, estão em **[INSTALAR-DO-GITHUB.md](INSTALAR-DO-GITHUB.md)**.
+**Outras formas:** clonar o repositório inteiro (`git clone https://github.com/GustavoMS0/Instalador-automatico.git`) ou rodar tudo em uma linha. Todas as opções, inclusive a instalação 100% automática, estão em **[INSTALAR-DO-GITHUB.md](INSTALAR-DO-GITHUB.md)**.
 
 ### Passo 2: executar
 
