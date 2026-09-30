@@ -366,14 +366,16 @@ done
 a2dismod -q mpm_event >/dev/null 2>&1 || true
 a2enmod -q mpm_prefork "php$PHP_VER" rewrite headers >/dev/null
 
-# Validação das extensões
+# Validação das extensões (lista do RequirementsManager do GLPI)
 PHP_MODS=$(php -m)
+REQUIRED_EXTS=(curl dom fileinfo filter gd intl libxml mbstring mysqli openssl session simplexml tokenizer xmlreader xmlwriter zlib)
+(( GLPI_MAJOR >= 11 )) && REQUIRED_EXTS+=(bcmath sodium)
 MISSING=()
-for ext in curl dom fileinfo gd intl json libxml mbstring mysqli session simplexml xmlreader xmlwriter zlib; do
+for ext in "${REQUIRED_EXTS[@]}"; do
   grep -qix "$ext" <<<"$PHP_MODS" || MISSING+=("$ext")
 done
 (( ${#MISSING[@]} == 0 )) || die "Extensões PHP obrigatórias ausentes: ${MISSING[*]}"
-for ext in bcmath bz2 exif ldap openssl sodium zip apcu "Zend OPcache"; do
+for ext in bz2 exif ldap Phar zip ctype iconv apcu "Zend OPcache"; do
   grep -qix "$ext" <<<"$PHP_MODS" || warn "Extensão PHP opcional ausente: $ext"
 done
 log "PHP $(php -r 'echo PHP_VERSION;') com todas as extensões obrigatórias"

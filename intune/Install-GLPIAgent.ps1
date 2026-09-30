@@ -186,7 +186,7 @@ foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
 if (-not $agent) { Write-Log 'FALHA: glpi-agent.bat nao encontrado'; exit 2 }
 
 Write-Log "Servidor $($uri.Host):$($uri.Port) OK - executando inventario"
-$out = & cmd.exe /c "`"$agent`" --force 2>&1"
+$out = & $agent --force 2>&1
 $rc  = $LASTEXITCODE
 $out | Select-Object -Last 5 | ForEach-Object { Write-Log "  $_" }
 Write-Log "Inventario finalizado (codigo $rc)"

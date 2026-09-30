@@ -361,6 +361,7 @@ O agente já envia inventário por conta própria, mas a tarefa agendada garante
 ```
 ├── README.md                        Este guia
 ├── INSTALAR-DO-GITHUB.md            Baixar e rodar direto do GitHub / modo automático
+├── LICENSE                          Licença MIT
 ├── servidor/
 │   ├── install-glpi.sh              Instalador do servidor GLPI
 │   └── glpi-install.conf.example    Modelo de configuração (instalação sem perguntas)
@@ -381,3 +382,11 @@ Sugestões e correções são bem-vindas. Abra uma *issue* ou envie um *pull req
 - [Microsoft Win32 Content Prep Tool](https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool)
 
 Este projeto não é oficial nem tem ligação com a Teclib' ou com a Microsoft.
+
+## Licença
+
+Distribuído sob a licença **MIT**. Veja o arquivo [LICENSE](LICENSE).
+
+Você pode usar, modificar e redistribuir livremente, inclusive em ambientes comerciais, desde que mantenha o aviso de copyright. Os scripts são fornecidos **"como estão", sem garantia**: teste em um ambiente de homologação antes de usar em produção.
+
+> O GLPI e o GLPI Agent, que estes scripts baixam e instalam, são softwares separados, distribuídos sob a licença GPL pelos seus autores.
