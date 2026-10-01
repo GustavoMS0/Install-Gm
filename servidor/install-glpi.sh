@@ -44,7 +44,7 @@ set -Eeuo pipefail
 readonly SCRIPT_VERSION="1.0.0"
 readonly LOG_FILE="/var/log/glpi-install-$(date +%Y%m%d-%H%M%S).log"
 readonly INFO_FILE="/root/glpi-install-info.txt"
-readonly GLPI_DIR="/var/www/glpi"
+GLPI_DIR="/var/www/glpi"          # não é readonly: no modo atualização aponta para o GLPI encontrado
 readonly GLPI_CONFIG_DIR="/etc/glpi"
 readonly GLPI_VAR_DIR="/var/lib/glpi"
 readonly GLPI_LOG_DIR="/var/log/glpi"
