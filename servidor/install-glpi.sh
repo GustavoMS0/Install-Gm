@@ -21,7 +21,8 @@
 #   10. Cria o catálogo padrão de categorias (TI, RH, Financeiro, Marketing)
 #   11. Cria grupos de atendimento por área, perfis de acesso e regras
 #       (cada área vê só os seus chamados; só o Super-Admin vê todos)
-#   12. Instala e ativa os plugins Cascater e GLPI Inventory
+#   12. Configura 4 prioridades (matriz ITIL), calendário, SLAs e OLAs
+#   13. Instala e ativa os plugins Cascater e GLPI Inventory
 #
 #  Se encontrar um GLPI já instalado, oferece ATUALIZAR mantendo todos os dados
 #  (backup completo, código novo, db:update e plugins compatíveis) ou reinstalar.
@@ -37,6 +38,8 @@
 #             GLPI_ROOT_ENTITY GLPI_BRANCHES CREATE_CATEGORIES CATEGORY_AREAS
 #             EXTRA_AREAS CREATE_ACCESS TEAM_GROUPS INSTALL_CASCATER CASCATER_REPO
 #             INSTALL_GLPIINVENTORY INSTALL_MODE GLPI_EXISTING_DIR GLPI_BACKUP_DIR
+#             SIMPLIFY_PRIORITIES CREATE_SLA BUSINESS_HOURS BUSINESS_SATURDAY
+#             SATURDAY_HOURS ADD_HOLIDAYS
 #             OVERWRITE CONFIRM
 # =============================================================================
 set -Eeuo pipefail
@@ -345,6 +348,147 @@ plugin_enable() {
   glpi_console plugin:activate --no-interaction "$1" >/dev/null 2>&1 || true
   state=$(db_glpi -N -e "SELECT state FROM glpi_plugins WHERE directory = '$(sql_escape "$1")'" 2>/dev/null || true)
   [[ $state == 1 ]]
+}
+
+# --- Prioridades, SLA e OLA (ITIL) --------------------------------------------
+# Só 4 níveis: Baixa(2) Média(3) Alta(4) Muito alta(5). Máscara = soma de (1 << nível) = 60.
+# Matriz ITIL priority_matrix[urgência][impacto]; os níveis 1 (desativados) contam como Baixa.
+readonly PRIORITY_MASK=60
+readonly PRIORITY_MATRIX='{"1":{"1":2,"2":2,"3":2,"4":3,"5":4},"2":{"1":2,"2":2,"3":2,"4":3,"5":4},"3":{"1":2,"2":2,"3":3,"4":4,"5":4},"4":{"1":3,"2":3,"3":4,"4":4,"5":5},"5":{"1":4,"2":4,"3":4,"4":5,"5":5}}'
+
+configure_priorities() {
+  db_glpi -e "INSERT INTO glpi_configs (context, name, value) VALUES
+      ('core', 'urgency_mask', '$PRIORITY_MASK'),
+      ('core', 'impact_mask', '$PRIORITY_MASK'),
+      ('core', 'priority_matrix', '$PRIORITY_MATRIX')
+    ON DUPLICATE KEY UPDATE value = VALUES(value);"
+}
+
+# Metas por prioridade. Tempo em horário de atendimento: Nm = minutos, Nh = horas, Nd = dias úteis.
+# prioridade | nome | SLA 1º atendimento | SLA solução | OLA 1º atendimento | OLA solução
+sla_catalog() {
+  cat <<'SLAS'
+5|Muito alta|15m|4h|10m|3h
+4|Alta|30m|8h|20m|6h
+3|Média|2h|2d|1h|1d
+2|Baixa|4h|5d|3h|4d
+SLAS
+}
+
+# Feriados nacionais de data fixa (perpétuos): DD-MM|nome
+br_holidays() {
+  cat <<'FERIADOS'
+01-01|Confraternização Universal
+21-04|Tiradentes
+01-05|Dia do Trabalho
+07-09|Independência do Brasil
+12-10|Nossa Senhora Aparecida
+02-11|Finados
+15-11|Proclamação da República
+20-11|Dia Nacional de Zumbi e da Consciência Negra
+25-12|Natal
+FERIADOS
+}
+
+hhmm_to_seconds() { local h=${1%%:*} m=${1##*:}; echo $(( 10#$h * 3600 + 10#$m * 60 )); }
+
+# Cria o calendário de atendimento (seg-sex, sábado opcional, feriados) e devolve o id
+create_business_calendar() {
+  local wstart=${BUSINESS_HOURS%%-*} wend=${BUSINESS_HOURS##*-} sstart="" send="" cal day secs hid
+  local -a cache=(0 0 0 0 0 0 0)
+  cal=$(db_glpi -N -e "INSERT INTO glpi_calendars (name, entities_id, is_recursive, comment, cache_duration, date_creation, date_mod)
+      VALUES ('Horário de atendimento', 0, 1, 'Criado pelo instalador: $BUSINESS_HOURS em dias úteis', '[]', NOW(), NOW());
+    SELECT LAST_INSERT_ID();")
+  secs=$(( $(hhmm_to_seconds "$wend") - $(hhmm_to_seconds "$wstart") ))
+  for day in 1 2 3 4 5; do   # 0 = domingo ... 6 = sábado
+    db_glpi -e "INSERT INTO glpi_calendarsegments (calendars_id, entities_id, is_recursive, day, begin, end)
+                VALUES ($cal, 0, 1, $day, '$wstart:00', '$wend:00');"
+    cache[$day]=$secs
+  done
+  if [[ $BUSINESS_SATURDAY == S ]]; then
+    sstart=${SATURDAY_HOURS%%-*}; send=${SATURDAY_HOURS##*-}
+    db_glpi -e "INSERT INTO glpi_calendarsegments (calendars_id, entities_id, is_recursive, day, begin, end)
+                VALUES ($cal, 0, 1, 6, '$sstart:00', '$send:00');"
+    cache[6]=$(( $(hhmm_to_seconds "$send") - $(hhmm_to_seconds "$sstart") ))
+  fi
+  # Cache que o GLPI usa para pular dias sem expediente (segundos por dia, domingo primeiro)
+  db_glpi -e "UPDATE glpi_calendars SET cache_duration = '[$(IFS=,; echo "${cache[*]}")]' WHERE id = $cal;"
+
+  if [[ $ADD_HOLIDAYS == S ]]; then
+    local line date name year
+    year=$(date +%Y)
+    while IFS='|' read -r date name; do
+      [[ -z $date ]] && continue
+      hid=$(db_glpi -N -e "INSERT INTO glpi_holidays (name, entities_id, is_recursive, begin_date, end_date, is_perpetual, date_creation, date_mod)
+          VALUES ('$(sql_escape "$name")', 0, 1, '$year-${date#*-}-${date%-*}', '$year-${date#*-}-${date%-*}', 1, NOW(), NOW());
+        SELECT LAST_INSERT_ID();")
+      db_glpi -e "INSERT INTO glpi_calendars_holidays (calendars_id, holidays_id) VALUES ($cal, $hid);"
+    done < <(br_holidays)
+  fi
+  echo "$cal"
+}
+
+# "15m" -> "15 minute" | "4h" -> "4 hour" | "2d" -> "2 day"
+sla_time() {
+  local n=${1%[mhd]} u=${1: -1}
+  case $u in m) echo "$n minute" ;; h) echo "$n hour" ;; d) echo "$n day" ;; esac
+}
+
+sla_label() { # texto amigável: "15 min", "4 h", "2 dias úteis"
+  local n=${1%[mhd]} u=${1: -1}
+  case $u in m) echo "$n min" ;; h) echo "$n h" ;; d) (( n == 1 )) && echo "1 dia útil" || echo "$n dias úteis" ;; esac
+}
+
+# Insere um SLA ou OLA e devolve o id. insert_level tabela slm calendário tipo(0=solução,1=atendimento) nome meta
+insert_level() {
+  local table=$1 slm=$2 cal=$3 type=$4 name=$5 n unit
+  read -r n unit <<<"$(sla_time "$6")"
+  db_glpi -N -e "INSERT INTO $table (name, entities_id, is_recursive, type, comment, number_time, use_ticket_calendar,
+        calendars_id, definition_time, end_of_working_day, slms_id, date_creation, date_mod)
+      VALUES ('$(sql_escape "$name")', 0, 1, $type, 'Criado pelo instalador (ITIL)', $n, 0, $cal, '$unit', 0, $slm, NOW(), NOW());
+    SELECT LAST_INSERT_ID();"
+}
+
+# Calendário + SLM + 8 SLAs + 8 OLAs + 1 regra por prioridade (na abertura e na atualização)
+create_sla_ola() {
+  local cal slm prio name s_tto s_ttr o_tto o_ttr id_s_tto id_s_ttr id_o_tto id_o_ttr rid ranking count=0
+  cal=$(create_business_calendar)
+  slm=$(db_glpi -N -e "INSERT INTO glpi_slms (name, entities_id, is_recursive, comment, use_ticket_calendar, calendars_id, date_creation, date_mod)
+      VALUES ('Níveis de serviço (ITIL)', 0, 1, 'SLA = prazo para o usuário; OLA = prazo interno da equipe', 0, $cal, NOW(), NOW());
+    SELECT LAST_INSERT_ID();")
+
+  while IFS='|' read -r prio name s_tto s_ttr o_tto o_ttr; do
+    [[ -z $prio ]] && continue
+    id_s_tto=$(insert_level glpi_slas "$slm" "$cal" 1 "SLA $name - 1º atendimento ($(sla_label "$s_tto"))" "$s_tto")
+    id_s_ttr=$(insert_level glpi_slas "$slm" "$cal" 0 "SLA $name - solução ($(sla_label "$s_ttr"))" "$s_ttr")
+    id_o_tto=$(insert_level glpi_olas "$slm" "$cal" 1 "OLA $name - 1º atendimento ($(sla_label "$o_tto"))" "$o_tto")
+    id_o_ttr=$(insert_level glpi_olas "$slm" "$cal" 0 "OLA $name - solução ($(sla_label "$o_ttr"))" "$o_ttr")
+
+    ranking=$(db_glpi -N -e "SELECT COALESCE(MAX(ranking), 0) + 1 FROM glpi_rules WHERE sub_type = 'RuleTicket'")
+    rid=$(db_glpi -N -e "INSERT INTO glpi_rules
+        (entities_id, sub_type, ranking, name, description, \`match\`, is_active, comment, is_recursive, uuid, \`condition\`, date_creation, date_mod)
+      VALUES (0, 'RuleTicket', $ranking, '$(sql_escape "SLA/OLA: prioridade $name")',
+        'Criada pelo instalador: aplica SLA e OLA conforme a prioridade (abertura e atualização)',
+        'AND', 1, '', 1, '$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)', 3, NOW(), NOW());
+      SELECT LAST_INSERT_ID();")
+    db_glpi -e "INSERT INTO glpi_rulecriterias (rules_id, criteria, \`condition\`, pattern) VALUES ($rid, 'priority', 0, '$prio');
+                INSERT INTO glpi_ruleactions (rules_id, action_type, field, value) VALUES
+                  ($rid, 'assign', 'slas_id_tto', '$id_s_tto'), ($rid, 'assign', 'slas_id_ttr', '$id_s_ttr'),
+                  ($rid, 'assign', 'olas_id_tto', '$id_o_tto'), ($rid, 'assign', 'olas_id_ttr', '$id_o_ttr');"
+    # O seletor manual do GLPI sempre mostra Crítica (6) e Muito baixa (1). Esses níveis entram
+    # na regra de Muito alta / Baixa e, com 4 níveis, são corrigidos para 5 / 2.
+    local extra=""
+    [[ $prio == 5 ]] && extra=6
+    [[ $prio == 2 ]] && extra=1
+    if [[ -n $extra ]]; then
+      db_glpi -e "UPDATE glpi_rules SET \`match\` = 'OR' WHERE id = $rid;
+                  INSERT INTO glpi_rulecriterias (rules_id, criteria, \`condition\`, pattern) VALUES ($rid, 'priority', 0, '$extra');"
+      [[ ${SIMPLIFY_PRIORITIES:-N} == S ]] && \
+        db_glpi -e "INSERT INTO glpi_ruleactions (rules_id, action_type, field, value) VALUES ($rid, 'assign', 'priority', '$prio');"
+    fi
+    count=$((count + 1))
+  done < <(sla_catalog)
+  echo "$count"
 }
 
 # --- Instalação existente (modo atualização) ---------------------------------
@@ -886,7 +1030,7 @@ detect_web_server() {
 # -----------------------------------------------------------------------------
 case "${1-}" in
   -h|--help)
-    sed -n '3,40p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,43p' "$0" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   "") ;;
   *)
@@ -1177,6 +1321,31 @@ if [[ $CREATE_ACCESS == S ]]; then
 fi
 
 echo
+echo "  -- Prioridades, SLA e OLA (ITIL) --"
+ask_yn SIMPLIFY_PRIORITIES "Usar 4 níveis de prioridade (Baixa, Média, Alta, Muito alta) com a matriz ITIL?" S
+ask_yn CREATE_SLA "Criar SLAs e OLAs por prioridade e vincular automaticamente aos chamados?" S
+valid_hours() { # HH:MM-HH:MM com fim depois do início
+  [[ $1 =~ ^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || return 1
+  (( $(hhmm_to_seconds "${1##*-}") > $(hhmm_to_seconds "${1%%-*}") ))
+}
+if [[ $CREATE_SLA == S ]]; then
+  while true; do
+    ask BUSINESS_HOURS "Horário de atendimento de segunda a sexta (HH:MM-HH:MM)" "08:00-18:00"
+    valid_hours "$BUSINESS_HOURS" && break
+    warn "Use o formato 08:00-18:00."; unset BUSINESS_HOURS
+  done
+  ask_yn BUSINESS_SATURDAY "A equipe atende aos sábados?" N
+  if [[ $BUSINESS_SATURDAY == S ]]; then
+    while true; do
+      ask SATURDAY_HOURS "Horário de sábado (HH:MM-HH:MM)" "08:00-12:00"
+      valid_hours "$SATURDAY_HOURS" && break
+      warn "Use o formato 08:00-12:00."; unset SATURDAY_HOURS
+    done
+  fi
+  ask_yn ADD_HOLIDAYS "Cadastrar os feriados nacionais de data fixa no calendário?" S
+fi
+
+echo
 echo "  -- Plugins --"
 ask_yn INSTALL_CASCATER "Instalar o plugin Cascater (seleção de categorias em cascata)?" S
 ask_yn INSTALL_GLPIINVENTORY "Instalar o plugin GLPI Inventory (descoberta de rede, SNMP, implantação de software)?" S
@@ -1196,6 +1365,8 @@ echo "    Matriz ..........: $GLPI_ROOT_ENTITY"
 echo "    Filiais .........: ${#BRANCHES[@]}$( (( ${#BRANCHES[@]} )) && printf ' (%s)' "$(IFS=';'; echo "${BRANCHES[*]}" | sed 's/;/, /g')")"
 echo "    Categorias ......: $( [[ $CREATE_CATEGORIES == S ]] && echo "${SELECTED_AREAS//,/, }" || echo "não criar")"
 echo "    Grupos e perfis .: $( [[ $CREATE_ACCESS == S ]] && echo "${SELECTED_AREAS//,/, }$( (( ${#TEAMS[@]} )) && printf ' + equipes: %s' "$(IFS=','; echo "${TEAMS[*]}" | sed 's/,/, /g')")" || echo "não criar")"
+echo "    Prioridades .....: $( [[ $SIMPLIFY_PRIORITIES == S ]] && echo "4 níveis + matriz ITIL" || echo "padrão do GLPI")"
+echo "    SLA / OLA .......: $( [[ $CREATE_SLA == S ]] && echo "criar (seg-sex $BUSINESS_HOURS$( [[ $BUSINESS_SATURDAY == S ]] && echo ", sáb $SATURDAY_HOURS"))" || echo "não criar")"
 echo "    Plugin Cascater .: $( [[ $INSTALL_CASCATER == S ]] && echo "instalar" || echo "não instalar")"
 echo "    GLPI Inventory ..: $( [[ $INSTALL_GLPIINVENTORY == S ]] && echo "instalar" || echo "não instalar")"
 echo
@@ -1476,6 +1647,21 @@ if [[ $CREATE_ACCESS == S ]]; then
 fi
 
 PLUGIN_ADMIN=glpi
+PRIORITY_SUMMARY="padrão do GLPI (5 níveis)"
+if [[ $SIMPLIFY_PRIORITIES == S ]]; then
+  configure_priorities
+  PRIORITY_SUMMARY="4 níveis (Baixa, Média, Alta, Muito alta) com matriz ITIL"
+  log "Prioridades: $PRIORITY_SUMMARY"
+fi
+
+SLA_SUMMARY="não criados"
+if [[ $CREATE_SLA == S ]]; then
+  SLA_RULES=$(create_sla_ola)
+  SLA_SUMMARY="8 SLAs + 8 OLAs ($SLA_RULES prioridades), atendimento seg-sex $BUSINESS_HOURS$( [[ $BUSINESS_SATURDAY == S ]] && echo ", sáb $SATURDAY_HOURS")$( [[ $ADD_HOLIDAYS == S ]] && echo ", com feriados nacionais")"
+  log "SLA/OLA: $SLA_SUMMARY"
+  log "Regras de negócio aplicam SLA e OLA pela prioridade na abertura e em cada mudança"
+fi
+
 CASCATER_STATUS="não instalado"
 if [[ $INSTALL_CASCATER == S ]]; then
   if CASCATER_VERSION=$(fetch_cascater) && plugin_enable Cascater; then
@@ -1566,6 +1752,8 @@ Matriz (entidade raiz) : $GLPI_ROOT_ENTITY
 Filiais ...............: $( (( ${#BRANCHES[@]} )) && (IFS=';'; echo "${BRANCHES[*]}" | sed 's/;/, /g') || echo "nenhuma")
 Categorias criadas ....: $CATEGORIES_CREATED$( [[ $CREATE_CATEGORIES == S ]] && echo " (${SELECTED_AREAS//,/, })")
 Grupos e perfis .......: $ACCESS_SUMMARY
+Prioridades ...........: $PRIORITY_SUMMARY
+SLA / OLA .............: $SLA_SUMMARY
 Plugin Cascater .......: $CASCATER_STATUS
 Plugin GLPI Inventory .: $GLPIINVENTORY_STATUS
 
@@ -1599,6 +1787,8 @@ echo "  URL p/ o GLPI Agent .: ${C_W}$AGENT_URL${C_N}"
 echo "  Entidades ...........: $GLPI_ROOT_ENTITY + ${#BRANCHES[@]} filial(is)"
 echo "  Categorias ..........: $CATEGORIES_CREATED criadas"
 echo "  Grupos e perfis .....: $ACCESS_SUMMARY"
+echo "  Prioridades .........: $PRIORITY_SUMMARY"
+echo "  SLA / OLA ...........: $SLA_SUMMARY"
 echo "  Plugin Cascater .....: $CASCATER_STATUS"
 echo "  GLPI Inventory ......: $GLPIINVENTORY_STATUS"
 echo

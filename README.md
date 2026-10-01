@@ -95,6 +95,11 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
   Áreas a criar, separadas por vírgula [TI,RH,Financeiro,Marketing]:
   Outros departamentos que ATENDEM chamados, além dos padrão (ex.: Jurídico, Compras, Facilities). Enter = nenhum: Jurídico,Compras
   Outras equipes/departamentos que abrem chamados, separados por vírgula (Enter = nenhum): Comercial,Produção
+  Usar 4 níveis de prioridade (Baixa, Média, Alta, Muito alta) com a matriz ITIL? [S/n]:
+  Criar SLAs e OLAs por prioridade e vincular automaticamente aos chamados? [S/n]:
+  Horário de atendimento de segunda a sexta (HH:MM-HH:MM) [08:00-18:00]:
+  A equipe atende aos sábados? [s/N]:
+  Cadastrar os feriados nacionais de data fixa no calendário? [S/n]:
   Instalar o plugin Cascater (seleção de categorias em cascata)? [S/n]:
   Instalar o plugin GLPI Inventory (descoberta de rede, SNMP, implantação de software)? [S/n]:
 ```
@@ -102,6 +107,7 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
 > 📄 Antes de responder, veja o que será criado:
 > - **[CATEGORIAS-PADRAO.md](CATEGORIAS-PADRAO.md)**: as 81 categorias de atendimento
 > - **[PERFIS-E-PERMISSOES.md](PERFIS-E-PERMISSOES.md)**: grupos, perfis e quem vê quais chamados
+> - **[PRIORIDADES-SLA-OLA.md](PRIORIDADES-SLA-OLA.md)**: os 4 níveis de prioridade, a matriz ITIL e os prazos de SLA e OLA
 
 | Pergunta | O que responder |
 |---|---|
@@ -117,6 +123,9 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
 | **Grupos e perfis de acesso** | Cria um grupo de atendimento por área e perfis em que **cada área vê só os seus chamados**, os gestores acompanham a equipe e **só o Super-Admin vê tudo**. Os chamados caem sozinhos no grupo da área pela categoria. 📄 **[Veja os perfis e quem vê o quê](PERFIS-E-PERMISSOES.md)** |
 | **Outros departamentos que atendem** | Departamentos além dos 4 padrão que também **recebem** chamados (ex.: `Jurídico,Compras,Facilities`). Cada um ganha um grupo de atendimento e 3 categorias básicas ([veja quais](CATEGORIAS-PADRAO.md#outros-departamentos)) e funciona igual ao RH: atendentes e gestores veem só os chamados dele |
 | **Outras equipes** | Setores que só **abrem** chamados (ex.: `Comercial,Produção`), para que o gestor de cada um acompanhe os chamados da equipe. Deixe em branco se não houver |
+| **4 níveis de prioridade** | Deixa só Baixa, Média, Alta e Muito alta, e a prioridade é calculada pela **matriz ITIL** (urgência × impacto). 📄 **[Veja a matriz](PRIORIDADES-SLA-OLA.md)** |
+| **SLAs e OLAs** | Cria o calendário de atendimento, os prazos de **1º atendimento** e **solução** para cada prioridade (SLA para o usuário, OLA para a equipe) e as regras que os aplicam sozinhas. 📄 **[Veja os prazos](PRIORIDADES-SLA-OLA.md#prazos-criados)** |
+| **Horário / sábados / feriados** | O horário em que a equipe atende. Os prazos só contam nesse horário. Os feriados nacionais de data fixa já entram no calendário |
 | **Plugin Cascater** | Troca a lista enorme de categorias por menus por nível (área › grupo › categoria). [Saiba mais](https://github.com/GustavoMS0/Cascater) |
 | **Plugin GLPI Inventory** | Plugin oficial que complementa o inventário nativo com **descoberta de rede**, **inventário SNMP** (switches, impressoras), **implantação de software** e coleta de informações pelos agentes. O script baixa a versão compatível com o GLPI instalado (1.6.x para GLPI 11, 1.5.x para GLPI 10). [Saiba mais](https://github.com/glpi-project/glpi-inventory-plugin) |
 
@@ -182,8 +191,9 @@ Cada variável definida no arquivo deixa de ser perguntada. Se ela estiver vazia
 8. **Monta a estrutura da empresa**: matriz como entidade principal e filiais como subentidades.
 9. **Cria o catálogo de categorias** das áreas escolhidas, válido para a matriz e todas as filiais.
 10. **Cria os grupos de atendimento e os perfis de acesso**: um grupo por área, perfis de atendente e gestor sem "ver todos", atribuição automática pela categoria e regras que marcam o grupo de quem abriu o chamado ([detalhes](PERFIS-E-PERMISSOES.md)).
-11. **Instala e ativa o plugin Cascater** (versão mais recente publicada).
-12. **Libera a porta** no firewall (ufw ou firewalld) e testa se o GLPI está respondendo.
+11. **Configura prioridades, SLA e OLA**: 4 níveis com a matriz ITIL, calendário de atendimento com feriados, SLAs e OLAs por prioridade e regras que os aplicam ([detalhes](PRIORIDADES-SLA-OLA.md)).
+12. **Instala e ativa os plugins** Cascater e GLPI Inventory (versões compatíveis mais recentes).
+13. **Libera a porta** no firewall (ufw ou firewalld) e testa se o GLPI está respondendo.
 
 ### Depois de instalar: liberar o acesso das pessoas
 
@@ -462,6 +472,7 @@ O agente já envia inventário por conta própria, mas a tarefa agendada garante
 ├── INSTALAR-DO-GITHUB.md            Baixar e rodar direto do GitHub / modo automático
 ├── CATEGORIAS-PADRAO.md             Catálogo de categorias criado pelo instalador
 ├── PERFIS-E-PERMISSOES.md           Grupos, perfis e quem vê quais chamados
+├── PRIORIDADES-SLA-OLA.md           Prioridades (matriz ITIL), SLA e OLA criados pelo instalador
 ├── INTEGRACAO-LDAP-SSO.md           Grupos e perfis automáticos via AD/LDAP e SSO
 ├── LICENSE                          Licença MIT
 ├── servidor/

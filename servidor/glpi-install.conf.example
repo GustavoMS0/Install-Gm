@@ -89,6 +89,18 @@
 #TEAM_GROUPS="Comercial,Produção,Logística"
 
 # Instalar o plugin Cascater, que mostra as categorias em menus por nível (S/N)
+# ---------------------------- Prioridades, SLA e OLA -------------------------
+# 4 níveis de prioridade (Baixa, Média, Alta, Muito alta) com a matriz ITIL (S/N)
+#SIMPLIFY_PRIORITIES="S"
+
+# Criar calendário, SLAs, OLAs e regras por prioridade. Veja PRIORIDADES-SLA-OLA.md (S/N)
+#CREATE_SLA="S"
+#BUSINESS_HOURS="08:00-18:00"       # horário de segunda a sexta
+#BUSINESS_SATURDAY="N"              # atende aos sábados? (S/N)
+#SATURDAY_HOURS="08:00-12:00"       # usado só se BUSINESS_SATURDAY="S"
+#ADD_HOLIDAYS="S"                   # feriados nacionais de data fixa no calendário
+
+# ---------------------------- Plugins ----------------------------------------
 #INSTALL_CASCATER="S"
 
 # Instalar o plugin oficial GLPI Inventory (descoberta de rede, SNMP, implantação) (S/N)
