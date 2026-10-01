@@ -55,6 +55,24 @@
 # Desativar os usuários padrão tech, normal e post-only (S/N)
 #DISABLE_DEFAULT_USERS="S"
 
+# ---------------------------- Estrutura da empresa ---------------------------
+# Nome da matriz / empresa. Vira a entidade principal (raiz) do GLPI.
+#GLPI_ROOT_ENTITY="Minha Empresa"
+
+# Filiais (subentidades da matriz), separadas por ";". Vazio = nenhuma filial.
+# Comentado = o script pergunta quantas são e o nome de cada uma.
+#GLPI_BRANCHES="Filial São Paulo;Filial Rio de Janeiro;Filial Curitiba"
+
+# ---------------------------- Categorias e plugins ---------------------------
+# Criar o catálogo padrão de categorias de atendimento (S/N)
+#CREATE_CATEGORIES="S"
+
+# Áreas do catálogo, separadas por vírgula. Opções: TI, RH, Financeiro, Marketing
+#CATEGORY_AREAS="TI,RH,Financeiro,Marketing"
+
+# Instalar o plugin Cascater, que mostra as categorias em menus por nível (S/N)
+#INSTALL_CASCATER="S"
+
 # ---------------------------- Automação --------------------------------------
 # S = apaga e reinstala se a base já existir (CUIDADO!)
 #OVERWRITE="N"

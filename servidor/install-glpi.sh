@@ -17,6 +17,9 @@
 #    7. Executa a instalação do banco via console (sem assistente web)
 #    8. Parametriza: idioma, URL, inventário nativo habilitado, cron em modo
 #       CLI, senha do admin "glpi", desativa usuários padrão
+#    9. Cria a estrutura da empresa (matriz + filiais como entidades)
+#   10. Cria o catálogo padrão de categorias (TI, RH, Financeiro, Marketing)
+#   11. Instala e ativa o plugin Cascater (categorias em cascata)
 #
 #  Modo não interativo: qualquer variável abaixo pode ser pré-definida em um
 #  arquivo de configuração (veja glpi-install.conf.example) ou no ambiente;
@@ -26,7 +29,8 @@
 #  Variáveis: GLPI_VERSION GLPI_FQDN GLPI_PORT GLPI_LANG GLPI_TZ DB_LOCAL
 #             DB_HOST DB_PORT DB_ADMIN_USER DB_ADMIN_PASS DB_NAME DB_USER
 #             DB_USER_HOST DB_PASS GLPI_ADMIN_PASS DISABLE_DEFAULT_USERS
-#             OVERWRITE CONFIRM
+#             GLPI_ROOT_ENTITY GLPI_BRANCHES CREATE_CATEGORIES CATEGORY_AREAS
+#             INSTALL_CASCATER CASCATER_REPO OVERWRITE CONFIRM
 # =============================================================================
 set -Eeuo pipefail
 
@@ -139,6 +143,153 @@ make_mycnf() { # make_mycnf arquivo host porta usuario senha
   } >>"$f"
 }
 
+trim() { local s=$1; s=${s#"${s%%[![:space:]]*}"}; s=${s%"${s##*[![:space:]]}"}; printf '%s' "$s"; }
+
+# Catálogo padrão de categorias: "Área > Grupo > Categoria | Tipo"
+# Tipo: I = incidente, R = requisição, A = ambos. Grupos herdam os tipos dos filhos.
+category_catalog() {
+  cat <<'CATALOG'
+TI > Hardware > Computador ou notebook não liga | I
+TI > Hardware > Lentidão no computador | I
+TI > Hardware > Periféricos (mouse, teclado, monitor) | A
+TI > Hardware > Solicitação de equipamento | R
+TI > Impressoras > Impressora não imprime | I
+TI > Impressoras > Atolamento de papel | I
+TI > Impressoras > Troca de toner ou cartucho | R
+TI > Impressoras > Instalação de impressora | R
+TI > Rede e Internet > Sem acesso à internet | I
+TI > Rede e Internet > Wi-Fi | A
+TI > Rede e Internet > VPN | A
+TI > Rede e Internet > Novo ponto de rede | R
+TI > Sistemas e Softwares > Erro em sistema | I
+TI > Sistemas e Softwares > Instalação de software | R
+TI > Sistemas e Softwares > Atualização de software | R
+TI > Sistemas e Softwares > Licenças | R
+TI > E-mail e Colaboração > Problema no e-mail | I
+TI > E-mail e Colaboração > Nova caixa ou lista de e-mail | R
+TI > E-mail e Colaboração > Teams e reuniões online | A
+TI > Acessos e Contas > Criação de usuário | R
+TI > Acessos e Contas > Redefinição de senha | R
+TI > Acessos e Contas > Conta bloqueada | I
+TI > Acessos e Contas > Permissão em pastas ou sistemas | R
+TI > Acessos e Contas > Desativação de usuário (desligamento) | R
+TI > Telefonia > Ramal ou telefone com defeito | I
+TI > Telefonia > Linha ou celular corporativo | R
+TI > Segurança da Informação > Suspeita de vírus ou phishing | I
+TI > Segurança da Informação > Incidente de segurança | I
+RH > Folha de Pagamento > Dúvida no holerite | R
+RH > Folha de Pagamento > Divergência no pagamento | I
+RH > Benefícios > Vale-transporte | R
+RH > Benefícios > Vale-refeição ou alimentação | R
+RH > Benefícios > Plano de saúde ou odontológico | R
+RH > Ponto e Jornada > Ajuste de ponto | R
+RH > Ponto e Jornada > Banco de horas | R
+RH > Férias e Afastamentos > Solicitação de férias | R
+RH > Férias e Afastamentos > Atestados e afastamentos | R
+RH > Admissão e Desligamento > Admissão de colaborador | R
+RH > Admissão e Desligamento > Desligamento de colaborador | R
+RH > Documentos e Declarações | R
+RH > Treinamento e Desenvolvimento | R
+Financeiro > Contas a Pagar > Pagamento a fornecedor | R
+Financeiro > Contas a Pagar > Pagamento em atraso | I
+Financeiro > Contas a Receber > Emissão de boleto | R
+Financeiro > Contas a Receber > Baixa de pagamento | R
+Financeiro > Notas Fiscais > Emissão de nota fiscal | R
+Financeiro > Notas Fiscais > Erro em nota fiscal | I
+Financeiro > Reembolso de Despesas | R
+Financeiro > Adiantamentos | R
+Financeiro > Orçamento e Centro de Custo | R
+Marketing > Criação de Peças > Arte para redes sociais | R
+Marketing > Criação de Peças > Material impresso | R
+Marketing > Criação de Peças > Apresentação institucional | R
+Marketing > Site e Redes Sociais > Atualização do site | R
+Marketing > Site e Redes Sociais > Problema no site | I
+Marketing > Site e Redes Sociais > Publicação em redes sociais | R
+Marketing > Eventos e Patrocínios | R
+Marketing > Brindes e Materiais | R
+Marketing > Comunicação Interna | R
+CATALOG
+}
+readonly CATEGORY_AREAS_AVAILABLE="TI,RH,Financeiro,Marketing"
+
+# Cria as categorias das áreas informadas (lista separada por vírgula).
+# Categorias ficam na entidade raiz e recursivas: valem para todas as filiais.
+create_categories() {
+  local areas=",$1," line path flag prefix parent id i inc req itil count=0
+  local -A FLAGS=() IDS=()
+  local -a lines=() parts=()
+
+  while IFS= read -r line; do
+    [[ -z $line ]] && continue
+    path=$(trim "${line%|*}")
+    local area; area=$(trim "${path%%>*}")
+    [[ ${areas,,} == *",${area,,},"* ]] || continue
+    lines+=("$line")
+  done < <(category_catalog)
+
+  # 1ª passada: tipos (I/R) de cada grupo = união dos tipos dos filhos
+  for line in "${lines[@]}"; do
+    path=$(trim "${line%|*}"); flag=$(trim "${line##*|}")
+    IFS='>' read -ra parts <<<"$path"
+    prefix=""
+    for i in "${!parts[@]}"; do
+      prefix="${prefix:+$prefix > }$(trim "${parts[$i]}")"
+      FLAGS[$prefix]+="$flag"
+    done
+  done
+
+  # 2ª passada: cria na ordem do catálogo
+  for line in "${lines[@]}"; do
+    path=$(trim "${line%|*}")
+    IFS='>' read -ra parts <<<"$path"
+    prefix=""; parent=0
+    for i in "${!parts[@]}"; do
+      local name; name=$(trim "${parts[$i]}")
+      prefix="${prefix:+$prefix > }$name"
+      if [[ -z ${IDS[$prefix]+x} ]]; then
+        inc=0; req=0
+        [[ ${FLAGS[$prefix]} == *[IA]* ]] && inc=1
+        [[ ${FLAGS[$prefix]} == *[RA]* ]] && req=1
+        itil=0; [[ $prefix == TI || $prefix == "TI > "* ]] && itil=1
+        id=$(db_glpi -N -e "INSERT INTO glpi_itilcategories
+            (entities_id, is_recursive, itilcategories_id, name, completename, level,
+             is_helpdeskvisible, is_incident, is_request, is_problem, is_change, date_creation, date_mod)
+          VALUES (0, 1, $parent, '$(sql_escape "$name")', '$(sql_escape "$prefix")', $((i + 1)),
+             1, $inc, $req, $itil, $itil, NOW(), NOW());
+          SELECT LAST_INSERT_ID();")
+        IDS[$prefix]=$id
+        count=$((count + 1))
+      fi
+      parent=${IDS[$prefix]}
+    done
+  done
+  echo "$count"
+}
+
+# Baixa (Release mais recente ou branch principal) e instala o plugin Cascater
+install_cascater() {
+  local repo=${CASCATER_REPO:-GustavoMS0/Cascater} tmp url
+  tmp=$(mktemp -d); TMP_FILES+=("$tmp")
+
+  url=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null \
+        | jq -r '[.assets[]? | select(.name | test("^cascater-.*\\.zip$"))][0].browser_download_url // empty' 2>/dev/null || true)
+  if [[ -n $url ]]; then
+    curl -fsSL -o "$tmp/cascater.zip" "$url" && unzip -q "$tmp/cascater.zip" -d "$tmp" || return 1
+  else
+    curl -fsSL "https://codeload.github.com/$repo/tar.gz/refs/heads/main" | tar -xz -C "$tmp" --strip-components=1 || return 1
+  fi
+  [[ -f $tmp/Cascater/setup.php ]] || return 1
+
+  rm -rf "$GLPI_DIR/plugins/Cascater"
+  cp -r "$tmp/Cascater" "$GLPI_DIR/plugins/Cascater"
+  chown -R root:root "$GLPI_DIR/plugins/Cascater"
+  chmod -R u=rwX,go=rX "$GLPI_DIR/plugins/Cascater"
+
+  glpi_console plugin:install --username=glpi --no-interaction Cascater >/dev/null 2>&1 || return 1
+  glpi_console plugin:activate --no-interaction Cascater >/dev/null 2>&1 || return 1
+  grep -oP "PLUGIN_CASCATER_VERSION', '\K[^']+" "$GLPI_DIR/plugins/Cascater/setup.php" 2>/dev/null || echo "?"
+}
+
 db_admin() { mysql --defaults-extra-file="$ADMIN_CNF" "$@"; }
 db_glpi()  { mysql --defaults-extra-file="$GLPI_CNF" "$DB_NAME" "$@"; }
 glpi_console() { runuser -u www-data -- php "$GLPI_DIR/bin/console" "$@"; }
@@ -148,7 +299,7 @@ glpi_console() { runuser -u www-data -- php "$GLPI_DIR/bin/console" "$@"; }
 # -----------------------------------------------------------------------------
 case "${1-}" in
   -h|--help)
-    sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,34p' "$0" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   "") ;;
   *)
@@ -170,7 +321,7 @@ echo "     Instalador automatizado do GLPI  -  v$SCRIPT_VERSION"
 echo "  ============================================================${C_N}"
 echo "  Log: $LOG_FILE"
 
-title "1/10 Verificando pré-requisitos do sistema"
+title "1/11 Verificando pré-requisitos do sistema"
 
 [[ -r /etc/os-release ]] || die "Não foi possível identificar o sistema operacional."
 # shellcheck disable=SC1091
@@ -209,7 +360,7 @@ curl -fsS --max-time 15 -o /dev/null https://api.github.com 2>/dev/null \
   || die "Sem acesso a https://api.github.com. Verifique internet/proxy/DNS."
 log "Acesso à internet OK"
 
-title "2/10 Instalando ferramentas básicas"
+title "2/11 Instalando ferramentas básicas"
 apt-get update -qq
 apt-get install -y -qq curl wget ca-certificates gnupg lsb-release tar bzip2 \
   jq unzip cron openssl apt-transport-https >/dev/null
@@ -218,7 +369,7 @@ log "Ferramentas básicas instaladas"
 # -----------------------------------------------------------------------------
 # 1. Descobrindo a última versão estável
 # -----------------------------------------------------------------------------
-title "3/10 Consultando a última versão estável do GLPI"
+title "3/11 Consultando a última versão estável do GLPI"
 if [[ -z "${GLPI_VERSION-}" ]]; then
   REL_JSON=$(curl -fsSL -H 'Accept: application/vnd.github+json' \
     https://api.github.com/repos/glpi-project/glpi/releases/latest) \
@@ -241,7 +392,7 @@ log "Versão estável mais recente: GLPI $GLPI_VERSION (PHP >= $PHP_MIN, MariaDB
 # -----------------------------------------------------------------------------
 # 2. Perguntas
 # -----------------------------------------------------------------------------
-title "4/10 Configuração da instalação"
+title "4/11 Configuração da instalação"
 DEFAULT_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
 echo "  -- Acesso web --"
@@ -297,6 +448,65 @@ GLPI_ADMIN_PASS_GENERATED=N
 if [[ -z $GLPI_ADMIN_PASS ]]; then GLPI_ADMIN_PASS=$(gen_pass); GLPI_ADMIN_PASS_GENERATED=S; fi
 ask_yn DISABLE_DEFAULT_USERS "Desativar os usuários padrão tech, normal e post-only?" S
 
+echo
+echo "  -- Estrutura da empresa (entidades) --"
+ask GLPI_ROOT_ENTITY "Nome da matriz / empresa (entidade principal)" "Matriz"
+GLPI_ROOT_ENTITY=$(trim "$GLPI_ROOT_ENTITY")
+if [[ -z ${GLPI_BRANCHES+x} ]]; then
+  while true; do
+    ask BRANCH_COUNT "Quantas filiais a empresa possui? (0 = nenhuma)" "0"
+    [[ $BRANCH_COUNT =~ ^[0-9]+$ ]] && (( BRANCH_COUNT <= 200 )) && break
+    warn "Informe um número entre 0 e 200."; unset BRANCH_COUNT
+  done
+  GLPI_BRANCHES=""
+  for (( n = 1; n <= BRANCH_COUNT; n++ )); do
+    unset BRANCH_NAME
+    ask BRANCH_NAME "Nome da filial $n" "Filial $n"
+    GLPI_BRANCHES+="${GLPI_BRANCHES:+;}$BRANCH_NAME"
+  done
+fi
+# Lista final de filiais (separadas por ";"), sem vazios nem repetidas
+BRANCHES=()
+IFS=';' read -ra __branches <<<"$GLPI_BRANCHES"
+for b in "${__branches[@]}"; do
+  b=$(trim "$b")
+  [[ -z $b ]] && continue
+  [[ ${#b} -le 100 ]] || die "Nome de filial muito longo: $b"
+  for existing in "$GLPI_ROOT_ENTITY" "${BRANCHES[@]}"; do
+    [[ ${existing,,} == "${b,,}" ]] && die "Nome de entidade repetido: $b"
+  done
+  BRANCHES+=("$b")
+done
+
+echo
+echo "  -- Categorias de atendimento --"
+ask_yn CREATE_CATEGORIES "Criar o catálogo padrão de categorias (TI, RH, Financeiro, Marketing)?" S
+if [[ $CREATE_CATEGORIES == S ]]; then
+  while true; do
+    ask CATEGORY_AREAS "Áreas a criar, separadas por vírgula" "$CATEGORY_AREAS_AVAILABLE"
+    SELECTED_AREAS=""; invalid=""
+    IFS=',' read -ra __areas <<<"$CATEGORY_AREAS"
+    for a in "${__areas[@]}"; do
+      a=$(trim "$a"); [[ -z $a ]] && continue
+      match=""
+      IFS=',' read -ra __avail <<<"$CATEGORY_AREAS_AVAILABLE"
+      for v in "${__avail[@]}"; do [[ ${v,,} == "${a,,}" ]] && match=$v; done
+      if [[ -n $match ]]; then
+        [[ ",$SELECTED_AREAS," == *",$match,"* ]] || SELECTED_AREAS+="${SELECTED_AREAS:+,}$match"
+      else
+        invalid+=" $a"
+      fi
+    done
+    [[ -z $invalid && -n $SELECTED_AREAS ]] && break
+    warn "Área(s) inválida(s):${invalid:- nenhuma informada}. Opções: $CATEGORY_AREAS_AVAILABLE"
+    unset CATEGORY_AREAS
+  done
+fi
+
+echo
+echo "  -- Plugins --"
+ask_yn INSTALL_CASCATER "Instalar o plugin Cascater (seleção de categorias em cascata)?" S
+
 if [[ $GLPI_PORT == 80 ]]; then GLPI_URL="http://$GLPI_FQDN"; else GLPI_URL="http://$GLPI_FQDN:$GLPI_PORT"; fi
 
 echo
@@ -307,6 +517,10 @@ echo "    Idioma / Fuso ...: $GLPI_LANG / $GLPI_TZ"
 echo "    Banco ...........: $DB_HOST:$DB_PORT  (local: $DB_LOCAL)"
 echo "    Base / Usuário ..: $DB_NAME / $DB_USER@$DB_USER_HOST"
 echo "    Admin do banco ..: $DB_ADMIN_USER"
+echo "    Matriz ..........: $GLPI_ROOT_ENTITY"
+echo "    Filiais .........: ${#BRANCHES[@]}$( (( ${#BRANCHES[@]} )) && printf ' (%s)' "$(IFS=';'; echo "${BRANCHES[*]}" | sed 's/;/, /g')")"
+echo "    Categorias ......: $( [[ $CREATE_CATEGORIES == S ]] && echo "${SELECTED_AREAS//,/, }" || echo "não criar")"
+echo "    Plugin Cascater .: $( [[ $INSTALL_CASCATER == S ]] && echo "instalar" || echo "não instalar")"
 echo
 ask_yn CONFIRM "Prosseguir com a instalação?" S
 [[ $CONFIRM == S ]] || die "Instalação cancelada pelo usuário."
@@ -314,7 +528,7 @@ ask_yn CONFIRM "Prosseguir com a instalação?" S
 # -----------------------------------------------------------------------------
 # 3. PHP + Apache
 # -----------------------------------------------------------------------------
-title "5/10 Instalando Apache e PHP"
+title "5/11 Instalando Apache e PHP"
 
 distro_php_version() {
   apt-cache depends php-cli 2>/dev/null | grep -oE 'php[0-9]+\.[0-9]+-cli' | head -n1 | grep -oE '[0-9]+\.[0-9]+' || true
@@ -403,7 +617,7 @@ log "php.ini ajustado (/etc/php/$PHP_VER/*/conf.d/99-glpi.ini)"
 # -----------------------------------------------------------------------------
 # 4. Banco de dados
 # -----------------------------------------------------------------------------
-title "6/10 Preparando o banco de dados"
+title "6/11 Preparando o banco de dados"
 
 if [[ $DB_LOCAL == S ]]; then
   if ! command -v mariadbd >/dev/null 2>&1 && ! command -v mysqld >/dev/null 2>&1; then
@@ -476,7 +690,7 @@ db_glpi -e "SELECT 1" >/dev/null 2>&1 || die "O usuário '$DB_USER' não consegu
 # -----------------------------------------------------------------------------
 # 5. Download e arquivos do GLPI
 # -----------------------------------------------------------------------------
-title "7/10 Baixando e instalando o GLPI $GLPI_VERSION"
+title "7/11 Baixando e instalando o GLPI $GLPI_VERSION"
 
 TS=$(date +%Y%m%d-%H%M%S)
 for d in "$GLPI_DIR" "$GLPI_CONFIG_DIR" "$GLPI_VAR_DIR" "$GLPI_LOG_DIR"; do
@@ -523,7 +737,7 @@ log "Diretórios: config=$GLPI_CONFIG_DIR  dados=$GLPI_VAR_DIR  logs=$GLPI_LOG_D
 # -----------------------------------------------------------------------------
 # 6. Apache
 # -----------------------------------------------------------------------------
-title "8/10 Configurando o Apache"
+title "8/11 Configurando o Apache"
 
 LISTENERS=$(ss -ltnpH "sport = :$GLPI_PORT" 2>/dev/null || true)
 if [[ -n $LISTENERS && $LISTENERS != *apache2* ]]; then
@@ -582,7 +796,7 @@ log "VirtualHost glpi ativo na porta $GLPI_PORT (DocumentRoot $DOCROOT)"
 # -----------------------------------------------------------------------------
 # 7. Instalação do banco do GLPI
 # -----------------------------------------------------------------------------
-title "9/10 Instalando o banco do GLPI (pode levar alguns minutos)"
+title "9/11 Instalando o banco do GLPI (pode levar alguns minutos)"
 
 INSTALL_ARGS=(
   db:install
@@ -620,13 +834,50 @@ if [[ $DISABLE_DEFAULT_USERS == S ]]; then
   log "Usuários padrão tech, normal e post-only desativados"
 fi
 
+# -----------------------------------------------------------------------------
+# 8. Estrutura da empresa, categorias e plugins
+# -----------------------------------------------------------------------------
+title "10/11 Estrutura da empresa, categorias e plugins"
+
+# Entidades: a matriz é a entidade raiz; as filiais são subentidades dela
+Q_ROOT=$(sql_escape "$GLPI_ROOT_ENTITY")
+db_glpi -e "UPDATE glpi_entities SET name = '$Q_ROOT', completename = '$Q_ROOT' WHERE id = 0;"
+for b in "${BRANCHES[@]}"; do
+  db_glpi -e "INSERT INTO glpi_entities (name, entities_id, completename, level, date_creation, date_mod)
+              VALUES ('$(sql_escape "$b")', 0, '$(sql_escape "$GLPI_ROOT_ENTITY > $b")', 2, NOW(), NOW());"
+done
+db_glpi -e "UPDATE glpi_entities SET sons_cache = NULL, ancestors_cache = NULL;"
+log "Entidades: $GLPI_ROOT_ENTITY + ${#BRANCHES[@]} filial(is)"
+
+CATEGORIES_CREATED=0
+if [[ $CREATE_CATEGORIES == S ]]; then
+  EXISTING_CATEGORIES=$(db_glpi -N -e "SELECT COUNT(*) FROM glpi_itilcategories")
+  if (( EXISTING_CATEGORIES > 0 )); then
+    warn "Já existem $EXISTING_CATEGORIES categorias; o catálogo padrão não foi criado."
+  else
+    CATEGORIES_CREATED=$(create_categories "$SELECTED_AREAS")
+    log "$CATEGORIES_CREATED categorias criadas (${SELECTED_AREAS//,/, }), válidas para todas as entidades"
+  fi
+fi
+
+CASCATER_STATUS="não instalado"
+if [[ $INSTALL_CASCATER == S ]]; then
+  if CASCATER_VERSION=$(install_cascater); then
+    CASCATER_STATUS="instalado e ativo (v$CASCATER_VERSION)"
+    log "Plugin Cascater $CASCATER_VERSION instalado e ativado"
+  else
+    CASCATER_STATUS="FALHOU (instale manualmente)"
+    warn "Não foi possível instalar o Cascater. Instale depois: https://github.com/${CASCATER_REPO:-GustavoMS0/Cascater}"
+  fi
+fi
+
 rm -f "$GLPI_DIR/install/install.php"
 glpi_console cache:clear --no-interaction >/dev/null 2>&1 || true
 
 # -----------------------------------------------------------------------------
-# 8. Cron, firewall e validação
+# 9. Cron, firewall e validação
 # -----------------------------------------------------------------------------
-title "10/10 Cron, firewall e validação"
+title "11/11 Cron, firewall e validação"
 
 CONSOLE_CMDS=$(glpi_console list --raw 2>/dev/null | awk '{print $1}' || true)
 if [[ -f $GLPI_DIR/front/cron.php ]]; then
@@ -683,6 +934,11 @@ Diretórios ............: código=$GLPI_DIR  config=$GLPI_CONFIG_DIR
                          dados=$GLPI_VAR_DIR  logs=$GLPI_LOG_DIR
 Chave de criptografia .: $GLPI_CONFIG_DIR/glpicrypt.key  (FAÇA BACKUP!)
 
+Matriz (entidade raiz) : $GLPI_ROOT_ENTITY
+Filiais ...............: $( (( ${#BRANCHES[@]} )) && (IFS=';'; echo "${BRANCHES[*]}" | sed 's/;/, /g') || echo "nenhuma")
+Categorias criadas ....: $CATEGORIES_CREATED$( [[ $CREATE_CATEGORIES == S ]] && echo " (${SELECTED_AREAS//,/, })")
+Plugin Cascater .......: $CASCATER_STATUS
+
 ---------------------- GLPI AGENT / INTUNE -------------------
 ServerUrl .............: $AGENT_URL
 HttpdTrust ............: $SERVER_IP
@@ -702,6 +958,9 @@ else
 fi
 [[ $DB_PASS_GENERATED == S ]] && echo "  Senha do banco ......: gerada automaticamente (ver $INFO_FILE)"
 echo "  URL p/ o GLPI Agent .: ${C_W}$AGENT_URL${C_N}"
+echo "  Entidades ...........: $GLPI_ROOT_ENTITY + ${#BRANCHES[@]} filial(is)"
+echo "  Categorias ..........: $CATEGORIES_CREATED criadas"
+echo "  Plugin Cascater .....: $CASCATER_STATUS"
 echo
 echo "  Todas as credenciais foram salvas em $INFO_FILE (somente root)."
 echo "  Faça backup de $GLPI_CONFIG_DIR/glpicrypt.key e $GLPI_CONFIG_DIR/config_db.php."

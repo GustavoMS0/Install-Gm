@@ -67,6 +67,13 @@ DB_PASS=""                           # vazio = gera senha forte
 
 GLPI_ADMIN_PASS=""                   # vazio = gera senha forte
 DISABLE_DEFAULT_USERS="S"
+
+GLPI_ROOT_ENTITY="Minha Empresa"     # matriz (entidade principal)
+GLPI_BRANCHES="Filial São Paulo;Filial Rio de Janeiro"   # "" = sem filiais
+CREATE_CATEGORIES="S"
+CATEGORY_AREAS="TI,RH,Financeiro,Marketing"
+INSTALL_CASCATER="S"
+
 CONFIRM="S"                          # não pede confirmação final
 ```
 
@@ -89,6 +96,13 @@ DB_PASS=""
 
 GLPI_ADMIN_PASS=""
 DISABLE_DEFAULT_USERS="S"
+
+GLPI_ROOT_ENTITY="Minha Empresa"
+GLPI_BRANCHES=""
+CREATE_CATEGORIES="S"
+CATEGORY_AREAS="TI"
+INSTALL_CASCATER="S"
+
 CONFIRM="S"
 ```
 </details>
@@ -118,8 +132,10 @@ curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servido
 && sudo GLPI_FQDN="glpi.suaempresa.local" GLPI_PORT="80" \
         DB_LOCAL="S" DB_ADMIN_USER="root" DB_ADMIN_PASS="" \
         DB_NAME="glpi" DB_USER="glpi" DB_PASS="" \
-        GLPI_ADMIN_PASS="" DISABLE_DEFAULT_USERS="S" CONFIRM="S" \
-        bash install-glpi.sh
+        GLPI_ADMIN_PASS="" DISABLE_DEFAULT_USERS="S" \
+        GLPI_ROOT_ENTITY="Minha Empresa" GLPI_BRANCHES="Filial São Paulo;Filial Rio" \
+        CREATE_CATEGORIES="S" CATEGORY_AREAS="TI,RH,Financeiro,Marketing" INSTALL_CASCATER="S" \
+        CONFIRM="S" bash install-glpi.sh
 ```
 
 > Não escreva senhas reais nesta linha: elas ficariam no histórico do terminal (`~/.bash_history`). Deixe as senhas vazias (o script gera senhas fortes e salva em `/root/glpi-install-info.txt`) ou use o modo B.
