@@ -93,6 +93,8 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
   Instalar o plugin Cascater (seleção de categorias em cascata)? [S/n]:
 ```
 
+> 📄 Antes de responder à pergunta do catálogo, veja a lista completa em **[CATEGORIAS-PADRAO.md](CATEGORIAS-PADRAO.md)**.
+
 | Pergunta | O que responder |
 |---|---|
 | **Nome DNS ou IP** | O endereço que as pessoas e os agentes usarão para acessar o GLPI |
@@ -102,7 +104,7 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
 | **Nome da base / usuário / senha** | Os dados que o GLPI usará para se conectar. Deixe a senha em branco para gerar uma senha forte |
 | **Senha do super-admin `glpi`** | A senha do seu primeiro login na interface web |
 | **Matriz / filiais** | O nome da empresa ou da matriz vira a entidade principal do GLPI, e cada filial vira uma subentidade dela. Com `0` filiais, tudo fica na matriz |
-| **Catálogo de categorias** | Cria uma árvore pronta de categorias de atendimento para as áreas escolhidas ([veja o catálogo](#catálogo-padrão-de-categorias)). Dá para criar só algumas áreas, por exemplo `TI,RH` |
+| **Catálogo de categorias** | Cria uma árvore pronta com 81 categorias de atendimento para as áreas escolhidas. Dá para criar só algumas áreas, por exemplo `TI,RH`. 📄 **[Veja todas as categorias que serão criadas](CATEGORIAS-PADRAO.md)** |
 | **Plugin Cascater** | Troca a lista enorme de categorias por menus por nível (área › grupo › categoria). [Saiba mais](https://github.com/GustavoMS0/Cascater) |
 
 No fim ele mostra um resumo e pede confirmação. A instalação leva de 3 a 10 minutos.
@@ -180,73 +182,7 @@ Cada categoria já vem marcada como **incidente** (algo parou de funcionar) ou *
 | **Financeiro** | Contas a Pagar · Contas a Receber · Notas Fiscais · Reembolso de Despesas · Adiantamentos · Orçamento e Centro de Custo |
 | **Marketing** | Criação de Peças · Site e Redes Sociais · Eventos e Patrocínios · Brindes e Materiais · Comunicação Interna |
 
-<details>
-<summary>Ver o catálogo completo (81 categorias)</summary>
-
-| Categoria | Tipo |
-|---|---|
-| TI › Hardware › Computador ou notebook não liga | Incidente |
-| TI › Hardware › Lentidão no computador | Incidente |
-| TI › Hardware › Periféricos (mouse, teclado, monitor) | Ambos |
-| TI › Hardware › Solicitação de equipamento | Requisição |
-| TI › Impressoras › Impressora não imprime | Incidente |
-| TI › Impressoras › Atolamento de papel | Incidente |
-| TI › Impressoras › Troca de toner ou cartucho | Requisição |
-| TI › Impressoras › Instalação de impressora | Requisição |
-| TI › Rede e Internet › Sem acesso à internet | Incidente |
-| TI › Rede e Internet › Wi-Fi | Ambos |
-| TI › Rede e Internet › VPN | Ambos |
-| TI › Rede e Internet › Novo ponto de rede | Requisição |
-| TI › Sistemas e Softwares › Erro em sistema | Incidente |
-| TI › Sistemas e Softwares › Instalação de software | Requisição |
-| TI › Sistemas e Softwares › Atualização de software | Requisição |
-| TI › Sistemas e Softwares › Licenças | Requisição |
-| TI › E-mail e Colaboração › Problema no e-mail | Incidente |
-| TI › E-mail e Colaboração › Nova caixa ou lista de e-mail | Requisição |
-| TI › E-mail e Colaboração › Teams e reuniões online | Ambos |
-| TI › Acessos e Contas › Criação de usuário | Requisição |
-| TI › Acessos e Contas › Redefinição de senha | Requisição |
-| TI › Acessos e Contas › Conta bloqueada | Incidente |
-| TI › Acessos e Contas › Permissão em pastas ou sistemas | Requisição |
-| TI › Acessos e Contas › Desativação de usuário (desligamento) | Requisição |
-| TI › Telefonia › Ramal ou telefone com defeito | Incidente |
-| TI › Telefonia › Linha ou celular corporativo | Requisição |
-| TI › Segurança da Informação › Suspeita de vírus ou phishing | Incidente |
-| TI › Segurança da Informação › Incidente de segurança | Incidente |
-| RH › Folha de Pagamento › Dúvida no holerite | Requisição |
-| RH › Folha de Pagamento › Divergência no pagamento | Incidente |
-| RH › Benefícios › Vale-transporte | Requisição |
-| RH › Benefícios › Vale-refeição ou alimentação | Requisição |
-| RH › Benefícios › Plano de saúde ou odontológico | Requisição |
-| RH › Ponto e Jornada › Ajuste de ponto | Requisição |
-| RH › Ponto e Jornada › Banco de horas | Requisição |
-| RH › Férias e Afastamentos › Solicitação de férias | Requisição |
-| RH › Férias e Afastamentos › Atestados e afastamentos | Requisição |
-| RH › Admissão e Desligamento › Admissão de colaborador | Requisição |
-| RH › Admissão e Desligamento › Desligamento de colaborador | Requisição |
-| RH › Documentos e Declarações | Requisição |
-| RH › Treinamento e Desenvolvimento | Requisição |
-| Financeiro › Contas a Pagar › Pagamento a fornecedor | Requisição |
-| Financeiro › Contas a Pagar › Pagamento em atraso | Incidente |
-| Financeiro › Contas a Receber › Emissão de boleto | Requisição |
-| Financeiro › Contas a Receber › Baixa de pagamento | Requisição |
-| Financeiro › Notas Fiscais › Emissão de nota fiscal | Requisição |
-| Financeiro › Notas Fiscais › Erro em nota fiscal | Incidente |
-| Financeiro › Reembolso de Despesas | Requisição |
-| Financeiro › Adiantamentos | Requisição |
-| Financeiro › Orçamento e Centro de Custo | Requisição |
-| Marketing › Criação de Peças › Arte para redes sociais | Requisição |
-| Marketing › Criação de Peças › Material impresso | Requisição |
-| Marketing › Criação de Peças › Apresentação institucional | Requisição |
-| Marketing › Site e Redes Sociais › Atualização do site | Requisição |
-| Marketing › Site e Redes Sociais › Problema no site | Incidente |
-| Marketing › Site e Redes Sociais › Publicação em redes sociais | Requisição |
-| Marketing › Eventos e Patrocínios | Requisição |
-| Marketing › Brindes e Materiais | Requisição |
-| Marketing › Comunicação Interna | Requisição |
-
-As 81 categorias incluem os grupos e as áreas. Os grupos aparecem para incidente, para requisição ou para ambos, conforme as categorias de dentro deles.
-</details>
+📄 **[Ver o catálogo completo, com o tipo de cada categoria](CATEGORIAS-PADRAO.md)**
 
 > As categorias ficam na matriz e valem para todas as filiais. Depois da instalação, é só ajustar em **Configurar › Listas suspensas › Categorias ITIL**: renomear, criar novas, desativar as que não usar ou definir um grupo técnico responsável por área.
 
@@ -455,6 +391,7 @@ O agente já envia inventário por conta própria, mas a tarefa agendada garante
 ```
 ├── README.md                        Este guia
 ├── INSTALAR-DO-GITHUB.md            Baixar e rodar direto do GitHub / modo automático
+├── CATEGORIAS-PADRAO.md             Catálogo de categorias criado pelo instalador
 ├── LICENSE                          Licença MIT
 ├── servidor/
 │   ├── install-glpi.sh              Instalador do servidor GLPI
