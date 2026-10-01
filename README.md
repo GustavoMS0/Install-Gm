@@ -96,6 +96,7 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
   Outros departamentos que ATENDEM chamados, além dos padrão (ex.: Jurídico, Compras, Facilities). Enter = nenhum: Jurídico,Compras
   Outras equipes/departamentos que abrem chamados, separados por vírgula (Enter = nenhum): Comercial,Produção
   Usar 4 níveis de prioridade (Baixa, Média, Alta, Muito alta) com a matriz ITIL? [S/n]:
+  Atrelar impacto à urgência (o chamado nasce com a prioridade escolhida pelo usuário)? [S/n]:
   Criar SLAs e OLAs por prioridade e vincular automaticamente aos chamados? [S/n]:
   Horário de atendimento de segunda a sexta (HH:MM-HH:MM) [08:00-18:00]:
   A equipe atende aos sábados? [s/N]:

@@ -93,6 +93,10 @@
 # 4 níveis de prioridade (Baixa, Média, Alta, Muito alta) com a matriz ITIL (S/N)
 #SIMPLIFY_PRIORITIES="S"
 
+# Impacto e prioridade acompanham a urgência escolhida pelo usuário (S/N).
+# O SLA sempre segue a prioridade, inclusive quando o técnico a altera depois.
+#LINK_URGENCY_IMPACT="S"
+
 # Criar calendário, SLAs, OLAs e regras por prioridade. Veja PRIORIDADES-SLA-OLA.md (S/N)
 #CREATE_SLA="S"
 #BUSINESS_HOURS="08:00-18:00"       # horário de segunda a sexta

@@ -38,8 +38,8 @@
 #             GLPI_ROOT_ENTITY GLPI_BRANCHES CREATE_CATEGORIES CATEGORY_AREAS
 #             EXTRA_AREAS CREATE_ACCESS TEAM_GROUPS INSTALL_CASCATER CASCATER_REPO
 #             INSTALL_GLPIINVENTORY INSTALL_MODE GLPI_EXISTING_DIR GLPI_BACKUP_DIR
-#             SIMPLIFY_PRIORITIES CREATE_SLA BUSINESS_HOURS BUSINESS_SATURDAY
-#             SATURDAY_HOURS ADD_HOLIDAYS
+#             SIMPLIFY_PRIORITIES LINK_URGENCY_IMPACT CREATE_SLA BUSINESS_HOURS
+#             BUSINESS_SATURDAY SATURDAY_HOURS ADD_HOLIDAYS
 #             OVERWRITE CONFIRM
 # =============================================================================
 set -Eeuo pipefail
@@ -426,6 +426,30 @@ create_business_calendar() {
     done < <(br_holidays)
   fi
   echo "$cal"
+}
+
+# Impacto atrelado à urgência: ao definir ou alterar a urgência, impacto e prioridade passam
+# a ter o mesmo nível. Precisa rodar ANTES das regras de SLA (criar antes = ranking menor):
+# nas regras de chamado do GLPI, cada regra recebe o resultado da anterior, então as regras
+# de SLA/OLA enxergam a prioridade já ajustada. Se o técnico mudar só o impacto ou a
+# prioridade, estas regras não rodam (a urgência não mudou) e o SLA segue a nova prioridade.
+create_link_rules() {
+  local prio name rid ranking count=0
+  while IFS='|' read -r prio name _; do
+    [[ -z $prio ]] && continue
+    ranking=$(db_glpi -N -e "SELECT COALESCE(MAX(ranking), 0) + 1 FROM glpi_rules WHERE sub_type = 'RuleTicket'")
+    rid=$(db_glpi -N -e "INSERT INTO glpi_rules
+        (entities_id, sub_type, ranking, name, description, \`match\`, is_active, comment, is_recursive, uuid, \`condition\`, date_creation, date_mod)
+      VALUES (0, 'RuleTicket', $ranking, '$(sql_escape "Prioridade pela urgência: $name")',
+        'Criada pelo instalador: impacto e prioridade acompanham a urgência (abertura e alteração da urgência)',
+        'AND', 1, '', 1, '$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)', 3, NOW(), NOW());
+      SELECT LAST_INSERT_ID();")
+    db_glpi -e "INSERT INTO glpi_rulecriterias (rules_id, criteria, \`condition\`, pattern) VALUES ($rid, 'urgency', 0, '$prio');
+                INSERT INTO glpi_ruleactions (rules_id, action_type, field, value) VALUES
+                  ($rid, 'assign', 'impact', '$prio'), ($rid, 'assign', 'priority', '$prio');"
+    count=$((count + 1))
+  done < <(sla_catalog)
+  echo "$count"
 }
 
 # "15m" -> "15 minute" | "4h" -> "4 hour" | "2d" -> "2 day"
@@ -1323,6 +1347,7 @@ fi
 echo
 echo "  -- Prioridades, SLA e OLA (ITIL) --"
 ask_yn SIMPLIFY_PRIORITIES "Usar 4 níveis de prioridade (Baixa, Média, Alta, Muito alta) com a matriz ITIL?" S
+ask_yn LINK_URGENCY_IMPACT "Atrelar impacto à urgência (o chamado nasce com a prioridade escolhida pelo usuário)?" S
 ask_yn CREATE_SLA "Criar SLAs e OLAs por prioridade e vincular automaticamente aos chamados?" S
 valid_hours() { # HH:MM-HH:MM com fim depois do início
   [[ $1 =~ ^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || return 1
@@ -1366,6 +1391,7 @@ echo "    Filiais .........: ${#BRANCHES[@]}$( (( ${#BRANCHES[@]} )) && printf '
 echo "    Categorias ......: $( [[ $CREATE_CATEGORIES == S ]] && echo "${SELECTED_AREAS//,/, }" || echo "não criar")"
 echo "    Grupos e perfis .: $( [[ $CREATE_ACCESS == S ]] && echo "${SELECTED_AREAS//,/, }$( (( ${#TEAMS[@]} )) && printf ' + equipes: %s' "$(IFS=','; echo "${TEAMS[*]}" | sed 's/,/, /g')")" || echo "não criar")"
 echo "    Prioridades .....: $( [[ $SIMPLIFY_PRIORITIES == S ]] && echo "4 níveis + matriz ITIL" || echo "padrão do GLPI")"
+echo "    Impacto=urgência : $( [[ $LINK_URGENCY_IMPACT == S ]] && echo "sim" || echo "não")"
 echo "    SLA / OLA .......: $( [[ $CREATE_SLA == S ]] && echo "criar (seg-sex $BUSINESS_HOURS$( [[ $BUSINESS_SATURDAY == S ]] && echo ", sáb $SATURDAY_HOURS"))" || echo "não criar")"
 echo "    Plugin Cascater .: $( [[ $INSTALL_CASCATER == S ]] && echo "instalar" || echo "não instalar")"
 echo "    GLPI Inventory ..: $( [[ $INSTALL_GLPIINVENTORY == S ]] && echo "instalar" || echo "não instalar")"
@@ -1654,6 +1680,13 @@ if [[ $SIMPLIFY_PRIORITIES == S ]]; then
   log "Prioridades: $PRIORITY_SUMMARY"
 fi
 
+LINK_SUMMARY="não"
+if [[ $LINK_URGENCY_IMPACT == S ]]; then
+  create_link_rules >/dev/null
+  LINK_SUMMARY="sim (impacto e prioridade acompanham a urgência)"
+  log "Impacto atrelado à urgência: o chamado nasce com a prioridade escolhida pelo usuário"
+fi
+
 SLA_SUMMARY="não criados"
 if [[ $CREATE_SLA == S ]]; then
   SLA_RULES=$(create_sla_ola)
@@ -1753,6 +1786,7 @@ Filiais ...............: $( (( ${#BRANCHES[@]} )) && (IFS=';'; echo "${BRANCHES[
 Categorias criadas ....: $CATEGORIES_CREATED$( [[ $CREATE_CATEGORIES == S ]] && echo " (${SELECTED_AREAS//,/, })")
 Grupos e perfis .......: $ACCESS_SUMMARY
 Prioridades ...........: $PRIORITY_SUMMARY
+Impacto x urgência ....: $LINK_SUMMARY
 SLA / OLA .............: $SLA_SUMMARY
 Plugin Cascater .......: $CASCATER_STATUS
 Plugin GLPI Inventory .: $GLPIINVENTORY_STATUS
@@ -1788,6 +1822,7 @@ echo "  Entidades ...........: $GLPI_ROOT_ENTITY + ${#BRANCHES[@]} filial(is)"
 echo "  Categorias ..........: $CATEGORIES_CREATED criadas"
 echo "  Grupos e perfis .....: $ACCESS_SUMMARY"
 echo "  Prioridades .........: $PRIORITY_SUMMARY"
+echo "  Impacto x urgência ..: $LINK_SUMMARY"
 echo "  SLA / OLA ...........: $SLA_SUMMARY"
 echo "  Plugin Cascater .....: $CASCATER_STATUS"
 echo "  GLPI Inventory ......: $GLPIINVENTORY_STATUS"
