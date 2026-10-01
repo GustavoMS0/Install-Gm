@@ -32,7 +32,7 @@
 #             DB_HOST DB_PORT DB_ADMIN_USER DB_ADMIN_PASS DB_NAME DB_USER
 #             DB_USER_HOST DB_PASS GLPI_ADMIN_PASS DISABLE_DEFAULT_USERS
 #             GLPI_ROOT_ENTITY GLPI_BRANCHES CREATE_CATEGORIES CATEGORY_AREAS
-#             CREATE_ACCESS TEAM_GROUPS INSTALL_CASCATER CASCATER_REPO
+#             EXTRA_AREAS CREATE_ACCESS TEAM_GROUPS INSTALL_CASCATER CASCATER_REPO
 #             OVERWRITE CONFIRM
 # =============================================================================
 set -Eeuo pipefail
@@ -230,6 +230,18 @@ create_categories() {
     lines+=("$line")
   done < <(category_catalog)
 
+  # Departamentos extras (fora do catálogo padrão): 3 categorias básicas cada
+  local known extra
+  local -a selected=()
+  known=",$(category_catalog | sed -E 's/ >.*//' | sort -u | tr '\n' ',')"
+  IFS=',' read -ra selected <<<"$1"
+  for extra in "${selected[@]}"; do
+    [[ -z $extra || ${known,,} == *",${extra,,},"* ]] && continue
+    lines+=("$extra > Dúvidas e orientações | R"
+            "$extra > Solicitações | R"
+            "$extra > Problemas e reclamações | I")
+  done
+
   # 1ª passada: tipos (I/R) de cada grupo = união dos tipos dos filhos
   for line in "${lines[@]}"; do
     path=$(trim "${line%|*}"); flag=$(trim "${line##*|}")
@@ -355,14 +367,17 @@ create_requester_group_rule() { # create_requester_group_rule grupo_id nome
 
 # Monta grupos de atendimento, perfis e regras. Usa: SELECTED_AREAS, TEAMS (array)
 create_access_structure() {
-  local area team gid pid groups=0 profiles=0
+  local area team gid pid groups=0 profiles=0 qa
   local -A GROUP_IDS=()
+  local -a areas=()
+  IFS=',' read -ra areas <<<"$SELECTED_AREAS"
 
-  for area in ${SELECTED_AREAS//,/ }; do
+  for area in "${areas[@]}"; do
     GROUP_IDS[$area]=$(create_group "$area" 1); groups=$((groups + 1))
     # Categorias da área passam a ter o grupo como responsável (atribuição automática)
+    qa=$(sql_escape "$area")
     db_glpi -e "UPDATE glpi_itilcategories SET groups_id = ${GROUP_IDS[$area]}
-                WHERE completename = '$(sql_escape "$area")' OR completename LIKE '$(sql_escape "$area") > %';"
+                WHERE completename = '$qa' OR LEFT(completename, CHAR_LENGTH('$qa > ')) = '$qa > ';"
   done
   for team in "${TEAMS[@]}"; do
     GROUP_IDS[$team]=$(create_group "$team" 0); groups=$((groups + 1))
@@ -608,6 +623,25 @@ if [[ $CREATE_CATEGORIES == S || $CREATE_ACCESS == S ]]; then
     warn "Área(s) inválida(s):${invalid:- nenhuma informada}. Opções: $CATEGORY_AREAS_AVAILABLE"
     unset CATEGORY_AREAS
   done
+
+  # Departamentos extras que também ATENDEM chamados (grupo + categorias básicas)
+  while true; do
+    ask EXTRA_AREAS "Outros departamentos que ATENDEM chamados, além dos padrão (ex.: Jurídico, Compras, Facilities). Enter = nenhum" ""
+    EXTRA_OK=""; bad=""
+    IFS=',' read -ra __extra <<<"$EXTRA_AREAS"
+    for x in "${__extra[@]}"; do
+      x=$(trim "$x"); [[ -z $x ]] && continue
+      if [[ $x == *[\>\|\;]* || ${#x} -gt 60 ]]; then bad+=" '$x' (sem > | ; e até 60 caracteres)"; continue; fi
+      IFS=',' read -ra __known <<<"$CATEGORY_AREAS_AVAILABLE,$SELECTED_AREAS,$EXTRA_OK"
+      dup=""; for k in "${__known[@]}"; do [[ -n $k && ${k,,} == "${x,,}" ]] && dup=1; done
+      if [[ -n $dup ]]; then bad+=" '$x' (repetido ou já é padrão)"; continue; fi
+      EXTRA_OK+="${EXTRA_OK:+,}$x"
+    done
+    [[ -z $bad ]] && break
+    warn "Departamento(s) inválido(s):$bad"
+    unset EXTRA_AREAS
+  done
+  [[ -n $EXTRA_OK ]] && SELECTED_AREAS+="${SELECTED_AREAS:+,}$EXTRA_OK"
 fi
 
 # Equipes que só abrem chamados (ex.: Comercial). Seus gestores veem os chamados da equipe.
@@ -618,7 +652,8 @@ if [[ $CREATE_ACCESS == S ]]; then
   for t in "${__teams[@]}"; do
     t=$(trim "$t"); [[ -z $t ]] && continue
     [[ ${#t} -le 100 ]] || die "Nome de equipe muito longo: $t"
-    for existing in ${SELECTED_AREAS//,/ } "${TEAMS[@]}"; do
+    IFS=',' read -ra __sel <<<"$SELECTED_AREAS"
+    for existing in "${__sel[@]}" "${TEAMS[@]}"; do
       [[ ${existing,,} == "${t,,}" ]] && die "Grupo repetido: $t (as áreas já viram grupos automaticamente)"
     done
     TEAMS+=("$t")

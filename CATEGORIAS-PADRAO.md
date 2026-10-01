@@ -118,6 +118,28 @@ Criação de peças, site e redes sociais, eventos e comunicação interna.
 | Brindes e Materiais | *(a própria categoria)* | Requisição |
 | Comunicação Interna | *(a própria categoria)* | Requisição |
 
+## Outros departamentos
+
+Além das 4 áreas padrão, o instalador pergunta:
+
+```
+Outros departamentos que ATENDEM chamados, além dos padrão (ex.: Jurídico, Compras, Facilities). Enter = nenhum:
+```
+
+Cada departamento informado vira uma área nova, com **3 categorias básicas**. Por exemplo, para `Jurídico`:
+
+| Grupo | Categoria | Tipo |
+|---|---|---|
+| Dúvidas e orientações | *(a própria categoria)* | Requisição |
+| Solicitações | *(a própria categoria)* | Requisição |
+| Problemas e reclamações | *(a própria categoria)* | Incidente |
+
+O departamento também ganha um **grupo de atendimento** com o mesmo nome, e as 3 categorias já ficam com esse grupo como responsável. Funciona igual às áreas padrão: os chamados caem sozinhos no grupo, e atendentes e gestores do departamento veem só os chamados dele (veja [PERFIS-E-PERMISSOES.md](PERFIS-E-PERMISSOES.md)).
+
+Depois da instalação, crie as subcategorias específicas de cada departamento (por exemplo, *Jurídico › Contratos › Revisão de contrato*) em **Configurar › Listas suspensas › Categorias ITIL**. Lembre de preencher nelas o mesmo **grupo responsável**.
+
+> Os departamentos que só **abrem** chamados (ex.: Comercial) não ganham categorias, só um grupo, porque eles não recebem chamados.
+
 ## Depois da instalação
 
 As categorias são um ponto de partida. Para ajustar, acesse no GLPI **Configurar › Listas suspensas › Categorias ITIL**. Lá dá para:

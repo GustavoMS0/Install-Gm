@@ -52,6 +52,7 @@ Nenhum perfil novo tem **"Ver todos os chamados"** nem **"Ver chamados novos"**.
 | Grupo | Atende chamados | Abre chamados | Origem |
 |---|---|---|---|
 | TI, RH, Financeiro, Marketing | ✅ | ✅ | áreas escolhidas na instalação |
+| Ex.: Jurídico, Compras, Facilities | ✅ | ✅ | "outros departamentos que atendem" informados na instalação |
 | Ex.: Comercial, Produção, Logística | — | ✅ | "outras equipes" informadas na instalação |
 
 Todos os grupos ficam na matriz e valem para todas as filiais.
@@ -77,7 +78,7 @@ Em **Administração › Usuários**, abra o usuário e:
 | Vendedor(a) | Self-Service | Comercial |
 | Administrador do sistema | Super-Admin | — |
 
-> **Todo colaborador deve estar no grupo da sua equipe.** Sem isso, o chamado dele não aparece para o gestor da equipe. Com **AD/LDAP**, dá para preencher os grupos automaticamente em **Configurar › Autenticação › Diretórios LDAP**.
+> **Todo colaborador deve estar no grupo da sua equipe.** Sem isso, o chamado dele não aparece para o gestor da equipe. Com **AD/LDAP ou SSO**, grupos e perfis podem ser preenchidos automaticamente. Veja o passo a passo em **[INTEGRACAO-LDAP-SSO.md](INTEGRACAO-LDAP-SSO.md)**.
 
 ### Restringir a uma filial
 

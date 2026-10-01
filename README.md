@@ -91,6 +91,7 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
   Criar o catálogo padrão de categorias (TI, RH, Financeiro, Marketing)? [S/n]:
   Criar grupos de atendimento por área e perfis de acesso (cada área vê só os seus chamados)? [S/n]:
   Áreas a criar, separadas por vírgula [TI,RH,Financeiro,Marketing]:
+  Outros departamentos que ATENDEM chamados, além dos padrão (ex.: Jurídico, Compras, Facilities). Enter = nenhum: Jurídico,Compras
   Outras equipes/departamentos que abrem chamados, separados por vírgula (Enter = nenhum): Comercial,Produção
   Instalar o plugin Cascater (seleção de categorias em cascata)? [S/n]:
 ```
@@ -110,6 +111,7 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
 | **Matriz / filiais** | O nome da empresa ou da matriz vira a entidade principal do GLPI, e cada filial vira uma subentidade dela. Com `0` filiais, tudo fica na matriz |
 | **Catálogo de categorias** | Cria uma árvore pronta com 81 categorias de atendimento para as áreas escolhidas. Dá para criar só algumas áreas, por exemplo `TI,RH`. 📄 **[Veja todas as categorias que serão criadas](CATEGORIAS-PADRAO.md)** |
 | **Grupos e perfis de acesso** | Cria um grupo de atendimento por área e perfis em que **cada área vê só os seus chamados**, os gestores acompanham a equipe e **só o Super-Admin vê tudo**. Os chamados caem sozinhos no grupo da área pela categoria. 📄 **[Veja os perfis e quem vê o quê](PERFIS-E-PERMISSOES.md)** |
+| **Outros departamentos que atendem** | Departamentos além dos 4 padrão que também **recebem** chamados (ex.: `Jurídico,Compras,Facilities`). Cada um ganha um grupo de atendimento e 3 categorias básicas ([veja quais](CATEGORIAS-PADRAO.md#outros-departamentos)) e funciona igual ao RH: atendentes e gestores veem só os chamados dele |
 | **Outras equipes** | Setores que só **abrem** chamados (ex.: `Comercial,Produção`), para que o gestor de cada um acompanhe os chamados da equipe. Deixe em branco se não houver |
 | **Plugin Cascater** | Troca a lista enorme de categorias por menus por nível (área › grupo › categoria). [Saiba mais](https://github.com/GustavoMS0/Cascater) |
 
@@ -191,6 +193,8 @@ Cada pessoa precisa de um **perfil** (o que pode fazer) e de um **grupo** (quais
 | Colaboradores em geral | Self-Service (padrão) | a sua equipe |
 
 Só o perfil **Super-Admin** vê todos os chamados. O passo a passo e os cuidados estão em **[PERFIS-E-PERMISSOES.md](PERFIS-E-PERMISSOES.md)**.
+
+> 🔐 **Usa Active Directory, LDAP ou SSO?** Dá para o GLPI colocar cada pessoa no grupo e no perfil certos sozinho, a partir dos grupos do AD. Veja **[INTEGRACAO-LDAP-SSO.md](INTEGRACAO-LDAP-SSO.md)**.
 
 ### Catálogo padrão de categorias
 
@@ -414,6 +418,7 @@ O agente já envia inventário por conta própria, mas a tarefa agendada garante
 ├── INSTALAR-DO-GITHUB.md            Baixar e rodar direto do GitHub / modo automático
 ├── CATEGORIAS-PADRAO.md             Catálogo de categorias criado pelo instalador
 ├── PERFIS-E-PERMISSOES.md           Grupos, perfis e quem vê quais chamados
+├── INTEGRACAO-LDAP-SSO.md           Grupos e perfis automáticos via AD/LDAP e SSO
 ├── LICENSE                          Licença MIT
 ├── servidor/
 │   ├── install-glpi.sh              Instalador do servidor GLPI

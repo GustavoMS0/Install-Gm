@@ -71,6 +71,11 @@
 # Opções: TI, RH, Financeiro, Marketing
 #CATEGORY_AREAS="TI,RH,Financeiro,Marketing"
 
+# Outros departamentos que também ATENDEM chamados, separados por vírgula.
+# Cada um ganha um grupo de atendimento e 3 categorias básicas
+# (Dúvidas e orientações, Solicitações, Problemas e reclamações). Vazio = nenhum.
+#EXTRA_AREAS="Jurídico,Compras,Facilities"
+
 # Criar grupos de atendimento por área, perfis de acesso e regras (S/N).
 # Cada área vê só os seus chamados; só o Super-Admin vê todos. Veja PERFIS-E-PERMISSOES.md
 #CREATE_ACCESS="S"

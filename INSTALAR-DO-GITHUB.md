@@ -72,6 +72,7 @@ GLPI_ROOT_ENTITY="Minha Empresa"     # matriz (entidade principal)
 GLPI_BRANCHES="Filial São Paulo;Filial Rio de Janeiro"   # "" = sem filiais
 CREATE_CATEGORIES="S"
 CATEGORY_AREAS="TI,RH,Financeiro,Marketing"
+EXTRA_AREAS="Jurídico,Compras"       # outros departamentos que atendem ("" = nenhum)
 CREATE_ACCESS="S"                    # grupos por área + perfis (cada área vê só os seus)
 TEAM_GROUPS="Comercial,Produção"     # equipes que só abrem chamados ("" = nenhuma)
 INSTALL_CASCATER="S"
@@ -103,6 +104,7 @@ GLPI_ROOT_ENTITY="Minha Empresa"
 GLPI_BRANCHES=""
 CREATE_CATEGORIES="S"
 CATEGORY_AREAS="TI"
+EXTRA_AREAS=""
 CREATE_ACCESS="S"
 TEAM_GROUPS=""
 INSTALL_CASCATER="S"
@@ -139,7 +141,7 @@ curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servido
         GLPI_ADMIN_PASS="" DISABLE_DEFAULT_USERS="S" \
         GLPI_ROOT_ENTITY="Minha Empresa" GLPI_BRANCHES="Filial São Paulo;Filial Rio" \
         CREATE_CATEGORIES="S" CATEGORY_AREAS="TI,RH,Financeiro,Marketing" \
-        CREATE_ACCESS="S" TEAM_GROUPS="Comercial" INSTALL_CASCATER="S" \
+        EXTRA_AREAS="Jurídico" CREATE_ACCESS="S" TEAM_GROUPS="Comercial" INSTALL_CASCATER="S" \
         CONFIRM="S" bash install-glpi.sh
 ```
 
