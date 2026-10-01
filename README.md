@@ -89,11 +89,15 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
   Nome da filial 1 [Filial 1]: Filial São Paulo
   Nome da filial 2 [Filial 2]: Filial Rio de Janeiro
   Criar o catálogo padrão de categorias (TI, RH, Financeiro, Marketing)? [S/n]:
+  Criar grupos de atendimento por área e perfis de acesso (cada área vê só os seus chamados)? [S/n]:
   Áreas a criar, separadas por vírgula [TI,RH,Financeiro,Marketing]:
+  Outras equipes/departamentos que abrem chamados, separados por vírgula (Enter = nenhum): Comercial,Produção
   Instalar o plugin Cascater (seleção de categorias em cascata)? [S/n]:
 ```
 
-> 📄 Antes de responder à pergunta do catálogo, veja a lista completa em **[CATEGORIAS-PADRAO.md](CATEGORIAS-PADRAO.md)**.
+> 📄 Antes de responder, veja o que será criado:
+> - **[CATEGORIAS-PADRAO.md](CATEGORIAS-PADRAO.md)**: as 81 categorias de atendimento
+> - **[PERFIS-E-PERMISSOES.md](PERFIS-E-PERMISSOES.md)**: grupos, perfis e quem vê quais chamados
 
 | Pergunta | O que responder |
 |---|---|
@@ -105,6 +109,8 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
 | **Senha do super-admin `glpi`** | A senha do seu primeiro login na interface web |
 | **Matriz / filiais** | O nome da empresa ou da matriz vira a entidade principal do GLPI, e cada filial vira uma subentidade dela. Com `0` filiais, tudo fica na matriz |
 | **Catálogo de categorias** | Cria uma árvore pronta com 81 categorias de atendimento para as áreas escolhidas. Dá para criar só algumas áreas, por exemplo `TI,RH`. 📄 **[Veja todas as categorias que serão criadas](CATEGORIAS-PADRAO.md)** |
+| **Grupos e perfis de acesso** | Cria um grupo de atendimento por área e perfis em que **cada área vê só os seus chamados**, os gestores acompanham a equipe e **só o Super-Admin vê tudo**. Os chamados caem sozinhos no grupo da área pela categoria. 📄 **[Veja os perfis e quem vê o quê](PERFIS-E-PERMISSOES.md)** |
+| **Outras equipes** | Setores que só **abrem** chamados (ex.: `Comercial,Produção`), para que o gestor de cada um acompanhe os chamados da equipe. Deixe em branco se não houver |
 | **Plugin Cascater** | Troca a lista enorme de categorias por menus por nível (área › grupo › categoria). [Saiba mais](https://github.com/GustavoMS0/Cascater) |
 
 No fim ele mostra um resumo e pede confirmação. A instalação leva de 3 a 10 minutos.
@@ -168,8 +174,23 @@ Cada variável definida no arquivo deixa de ser perguntada. Se ela estiver vazia
    - `install.php` removido
 8. **Monta a estrutura da empresa**: matriz como entidade principal e filiais como subentidades.
 9. **Cria o catálogo de categorias** das áreas escolhidas, válido para a matriz e todas as filiais.
-10. **Instala e ativa o plugin Cascater** (versão mais recente publicada).
-11. **Libera a porta** no firewall (ufw ou firewalld) e testa se o GLPI está respondendo.
+10. **Cria os grupos de atendimento e os perfis de acesso**: um grupo por área, perfis de atendente e gestor sem "ver todos", atribuição automática pela categoria e regras que marcam o grupo de quem abriu o chamado ([detalhes](PERFIS-E-PERMISSOES.md)).
+11. **Instala e ativa o plugin Cascater** (versão mais recente publicada).
+12. **Libera a porta** no firewall (ufw ou firewalld) e testa se o GLPI está respondendo.
+
+### Depois de instalar: liberar o acesso das pessoas
+
+Cada pessoa precisa de um **perfil** (o que pode fazer) e de um **grupo** (quais chamados vê), em **Administração › Usuários**:
+
+| Quem | Perfil | Grupo |
+|---|---|---|
+| Atendente do RH, Financeiro ou Marketing | Atendente de Área | RH / Financeiro / Marketing |
+| Gestor(a) dessas áreas | Gestor de Área | a área |
+| Técnico(a) / coordenador(a) de TI | Técnico de TI / Gestor de TI | TI |
+| Gestor(a) de uma equipe que só abre chamados | Gestor de Equipe | a equipe (ex.: Comercial) |
+| Colaboradores em geral | Self-Service (padrão) | a sua equipe |
+
+Só o perfil **Super-Admin** vê todos os chamados. O passo a passo e os cuidados estão em **[PERFIS-E-PERMISSOES.md](PERFIS-E-PERMISSOES.md)**.
 
 ### Catálogo padrão de categorias
 
@@ -392,6 +413,7 @@ O agente já envia inventário por conta própria, mas a tarefa agendada garante
 ├── README.md                        Este guia
 ├── INSTALAR-DO-GITHUB.md            Baixar e rodar direto do GitHub / modo automático
 ├── CATEGORIAS-PADRAO.md             Catálogo de categorias criado pelo instalador
+├── PERFIS-E-PERMISSOES.md           Grupos, perfis e quem vê quais chamados
 ├── LICENSE                          Licença MIT
 ├── servidor/
 │   ├── install-glpi.sh              Instalador do servidor GLPI

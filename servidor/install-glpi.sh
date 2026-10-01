@@ -19,7 +19,9 @@
 #       CLI, senha do admin "glpi", desativa usuários padrão
 #    9. Cria a estrutura da empresa (matriz + filiais como entidades)
 #   10. Cria o catálogo padrão de categorias (TI, RH, Financeiro, Marketing)
-#   11. Instala e ativa o plugin Cascater (categorias em cascata)
+#   11. Cria grupos de atendimento por área, perfis de acesso e regras
+#       (cada área vê só os seus chamados; só o Super-Admin vê todos)
+#   12. Instala e ativa o plugin Cascater (categorias em cascata)
 #
 #  Modo não interativo: qualquer variável abaixo pode ser pré-definida em um
 #  arquivo de configuração (veja glpi-install.conf.example) ou no ambiente;
@@ -30,7 +32,8 @@
 #             DB_HOST DB_PORT DB_ADMIN_USER DB_ADMIN_PASS DB_NAME DB_USER
 #             DB_USER_HOST DB_PASS GLPI_ADMIN_PASS DISABLE_DEFAULT_USERS
 #             GLPI_ROOT_ENTITY GLPI_BRANCHES CREATE_CATEGORIES CATEGORY_AREAS
-#             INSTALL_CASCATER CASCATER_REPO OVERWRITE CONFIRM
+#             CREATE_ACCESS TEAM_GROUPS INSTALL_CASCATER CASCATER_REPO
+#             OVERWRITE CONFIRM
 # =============================================================================
 set -Eeuo pipefail
 
@@ -290,6 +293,108 @@ install_cascater() {
   grep -oP "PLUGIN_CASCATER_VERSION', '\K[^']+" "$GLPI_DIR/plugins/Cascater/setup.php" 2>/dev/null || echo "?"
 }
 
+# --- Grupos, perfis e regras de acesso ---------------------------------------
+# Direitos de chamado (bits do GLPI): READMY=1 UPDATE=2 CREATE=4 DELETE=8
+# READGROUP=2048 READASSIGN=4096 ASSIGN=8192 STEAL=16384 OWN=32768
+# CHANGEPRIORITY=65536 SURVEY=131072. Nenhum perfil novo recebe READALL (1024)
+# nem READNEWTICKET (262144): só o Super-Admin vê todos os chamados.
+readonly RIGHTS_TICKET_ATTENDANT=249863   # meus + atribuídos a mim/meu grupo, assumir, prioridade
+readonly RIGHTS_TICKET_MANAGER=260111     # atendente + abertos pela equipe, atribuir, excluir
+readonly RIGHTS_TICKET_TEAM_MANAGER=2053  # autoatendimento + abertos pela equipe
+# Módulos mantidos nos perfis das áreas que não são TI (sem inventário)
+readonly AREA_PROFILE_RIGHTS="'document','followup','group','knowbase','password_update','personalization','pendingreason','planning','reminder_public','rssfeed_public','task','ticket','ticketvalidation','user'"
+
+# Cria um grupo na entidade raiz (recursivo) e devolve o id
+create_group() { # create_group nome atende(0/1)
+  local q; q=$(sql_escape "$1")
+  db_glpi -N -e "INSERT INTO glpi_groups
+      (entities_id, is_recursive, name, completename, level, groups_id,
+       is_requester, is_watcher, is_assign, is_task, is_notify, is_itemgroup, is_usergroup, is_manager,
+       date_creation, date_mod)
+    VALUES (0, 1, '$q', '$q', 1, 0, 1, 1, $2, $2, 1, 0, 1, 1, NOW(), NOW());
+    SELECT LAST_INSERT_ID();"
+}
+
+# Copia um perfil existente (todas as colunas e direitos) e devolve o id do novo
+clone_profile() { # clone_profile perfil_origem nome comentario
+  local cols src id
+  src=$(db_glpi -N -e "SELECT id FROM glpi_profiles WHERE name = '$(sql_escape "$1")' LIMIT 1")
+  [[ -n $src ]] || return 1
+  cols=$(db_glpi -N -e "SELECT GROUP_CONCAT(CONCAT('\`', column_name, '\`'))
+      FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'glpi_profiles'
+      AND column_name NOT IN ('id', 'name', 'comment', 'is_default', 'date_mod', 'date_creation')")
+  id=$(db_glpi -N -e "INSERT INTO glpi_profiles (name, comment, is_default, date_mod, date_creation, $cols)
+      SELECT '$(sql_escape "$2")', '$(sql_escape "$3")', 0, NOW(), NOW(), $cols FROM glpi_profiles WHERE id = $src;
+    SELECT LAST_INSERT_ID();")
+  db_glpi -e "INSERT INTO glpi_profilerights (profiles_id, name, rights)
+      SELECT $id, name, rights FROM glpi_profilerights WHERE profiles_id = $src;"
+  echo "$id"
+}
+
+set_rights() { # set_rights perfil_id "nome=valor nome=valor ..."
+  local pair
+  for pair in $2; do
+    db_glpi -e "UPDATE glpi_profilerights SET rights = ${pair#*=} WHERE profiles_id = $1 AND name = '${pair%%=*}';"
+  done
+}
+
+# Regra de negócio: requerente que faz parte do grupo -> grupo entra como requerente
+create_requester_group_rule() { # create_requester_group_rule grupo_id nome
+  local rid ranking uuid
+  ranking=$(db_glpi -N -e "SELECT COALESCE(MAX(ranking), 0) + 1 FROM glpi_rules WHERE sub_type = 'RuleTicket'")
+  uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
+  rid=$(db_glpi -N -e "INSERT INTO glpi_rules
+      (entities_id, sub_type, ranking, name, description, \`match\`, is_active, comment, is_recursive, uuid, \`condition\`, date_creation, date_mod)
+    VALUES (0, 'RuleTicket', $ranking, '$(sql_escape "Grupo requerente: $2")',
+      'Criada pelo instalador: chamados abertos por membros do grupo ficam visíveis para o gestor da equipe',
+      'AND', 1, '', 1, '$uuid', 1, NOW(), NOW());
+    SELECT LAST_INSERT_ID();")
+  db_glpi -e "INSERT INTO glpi_rulecriterias (rules_id, criteria, \`condition\`, pattern) VALUES ($rid, '_groups_id_of_requester', 0, '$1');
+              INSERT INTO glpi_ruleactions (rules_id, action_type, field, value) VALUES ($rid, 'append', '_groups_id_requester', '$1');"
+}
+
+# Monta grupos de atendimento, perfis e regras. Usa: SELECTED_AREAS, TEAMS (array)
+create_access_structure() {
+  local area team gid pid groups=0 profiles=0
+  local -A GROUP_IDS=()
+
+  for area in ${SELECTED_AREAS//,/ }; do
+    GROUP_IDS[$area]=$(create_group "$area" 1); groups=$((groups + 1))
+    # Categorias da área passam a ter o grupo como responsável (atribuição automática)
+    db_glpi -e "UPDATE glpi_itilcategories SET groups_id = ${GROUP_IDS[$area]}
+                WHERE completename = '$(sql_escape "$area")' OR completename LIKE '$(sql_escape "$area") > %';"
+  done
+  for team in "${TEAMS[@]}"; do
+    GROUP_IDS[$team]=$(create_group "$team" 0); groups=$((groups + 1))
+  done
+  for gid in "${!GROUP_IDS[@]}"; do
+    create_requester_group_rule "${GROUP_IDS[$gid]}" "$gid"
+  done
+
+  # Atribuição automática: primeiro pela categoria, depois pelo item
+  db_glpi -e "UPDATE glpi_entities SET auto_assign_mode = 2 WHERE id = 0;"
+
+  if [[ ",$SELECTED_AREAS," == *",TI,"* ]]; then
+    pid=$(clone_profile Technician "Técnico de TI" "Atende chamados atribuídos a ele ou ao grupo TI. Acesso ao inventário.")
+    set_rights "$pid" "ticket=$RIGHTS_TICKET_ATTENDANT"; profiles=$((profiles + 1))
+    pid=$(clone_profile Supervisor "Gestor de TI" "Técnico de TI + chamados abertos pela equipe, atribuição e estatísticas.")
+    set_rights "$pid" "ticket=$RIGHTS_TICKET_MANAGER"; profiles=$((profiles + 1))
+  fi
+
+  pid=$(clone_profile Technician "Atendente de Área" "Atende chamados atribuídos a ele ou ao grupo da sua área (RH, Financeiro...). Sem inventário.")
+  db_glpi -e "UPDATE glpi_profilerights SET rights = 0 WHERE profiles_id = $pid AND name NOT IN ($AREA_PROFILE_RIGHTS);"
+  set_rights "$pid" "ticket=$RIGHTS_TICKET_ATTENDANT user=1 group=1"; profiles=$((profiles + 1))
+
+  pid=$(clone_profile Technician "Gestor de Área" "Atendente de Área + chamados abertos pela equipe, atribuição e estatísticas.")
+  db_glpi -e "UPDATE glpi_profilerights SET rights = 0 WHERE profiles_id = $pid AND name NOT IN ($AREA_PROFILE_RIGHTS, 'statistic', 'reports');"
+  set_rights "$pid" "ticket=$RIGHTS_TICKET_MANAGER user=1 group=1 statistic=1 reports=1 ticketvalidation=15376"; profiles=$((profiles + 1))
+
+  pid=$(clone_profile Self-Service "Gestor de Equipe" "Autoatendimento + chamados abertos pelos membros dos seus grupos.")
+  set_rights "$pid" "ticket=$RIGHTS_TICKET_TEAM_MANAGER"; profiles=$((profiles + 1))
+
+  echo "$groups $profiles"
+}
+
 db_admin() { mysql --defaults-extra-file="$ADMIN_CNF" "$@"; }
 db_glpi()  { mysql --defaults-extra-file="$GLPI_CNF" "$DB_NAME" "$@"; }
 glpi_console() { runuser -u www-data -- php "$GLPI_DIR/bin/console" "$@"; }
@@ -299,7 +404,7 @@ glpi_console() { runuser -u www-data -- php "$GLPI_DIR/bin/console" "$@"; }
 # -----------------------------------------------------------------------------
 case "${1-}" in
   -h|--help)
-    sed -n '3,34p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,37p' "$0" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   "") ;;
   *)
@@ -479,9 +584,11 @@ for b in "${__branches[@]}"; do
 done
 
 echo
-echo "  -- Categorias de atendimento --"
+echo "  -- Categorias, grupos de atendimento e permissões --"
 ask_yn CREATE_CATEGORIES "Criar o catálogo padrão de categorias (TI, RH, Financeiro, Marketing)?" S
-if [[ $CREATE_CATEGORIES == S ]]; then
+ask_yn CREATE_ACCESS "Criar grupos de atendimento por área e perfis de acesso (cada área vê só os seus chamados)?" S
+SELECTED_AREAS=""
+if [[ $CREATE_CATEGORIES == S || $CREATE_ACCESS == S ]]; then
   while true; do
     ask CATEGORY_AREAS "Áreas a criar, separadas por vírgula" "$CATEGORY_AREAS_AVAILABLE"
     SELECTED_AREAS=""; invalid=""
@@ -503,6 +610,21 @@ if [[ $CREATE_CATEGORIES == S ]]; then
   done
 fi
 
+# Equipes que só abrem chamados (ex.: Comercial). Seus gestores veem os chamados da equipe.
+TEAMS=()
+if [[ $CREATE_ACCESS == S ]]; then
+  ask TEAM_GROUPS "Outras equipes/departamentos que abrem chamados, separados por vírgula (Enter = nenhum)" ""
+  IFS=',' read -ra __teams <<<"$TEAM_GROUPS"
+  for t in "${__teams[@]}"; do
+    t=$(trim "$t"); [[ -z $t ]] && continue
+    [[ ${#t} -le 100 ]] || die "Nome de equipe muito longo: $t"
+    for existing in ${SELECTED_AREAS//,/ } "${TEAMS[@]}"; do
+      [[ ${existing,,} == "${t,,}" ]] && die "Grupo repetido: $t (as áreas já viram grupos automaticamente)"
+    done
+    TEAMS+=("$t")
+  done
+fi
+
 echo
 echo "  -- Plugins --"
 ask_yn INSTALL_CASCATER "Instalar o plugin Cascater (seleção de categorias em cascata)?" S
@@ -520,6 +642,7 @@ echo "    Admin do banco ..: $DB_ADMIN_USER"
 echo "    Matriz ..........: $GLPI_ROOT_ENTITY"
 echo "    Filiais .........: ${#BRANCHES[@]}$( (( ${#BRANCHES[@]} )) && printf ' (%s)' "$(IFS=';'; echo "${BRANCHES[*]}" | sed 's/;/, /g')")"
 echo "    Categorias ......: $( [[ $CREATE_CATEGORIES == S ]] && echo "${SELECTED_AREAS//,/, }" || echo "não criar")"
+echo "    Grupos e perfis .: $( [[ $CREATE_ACCESS == S ]] && echo "${SELECTED_AREAS//,/, }$( (( ${#TEAMS[@]} )) && printf ' + equipes: %s' "$(IFS=','; echo "${TEAMS[*]}" | sed 's/,/, /g')")" || echo "não criar")"
 echo "    Plugin Cascater .: $( [[ $INSTALL_CASCATER == S ]] && echo "instalar" || echo "não instalar")"
 echo
 ask_yn CONFIRM "Prosseguir com a instalação?" S
@@ -860,6 +983,15 @@ if [[ $CREATE_CATEGORIES == S ]]; then
   fi
 fi
 
+ACCESS_SUMMARY="não criados"
+if [[ $CREATE_ACCESS == S ]]; then
+  ACCESS_RESULT=$(create_access_structure)
+  ACCESS_SUMMARY="${ACCESS_RESULT% *} grupos, ${ACCESS_RESULT#* } perfis"
+  log "Grupos de atendimento: ${SELECTED_AREAS//,/, }$( (( ${#TEAMS[@]} )) && printf ' | equipes: %s' "$(IFS=','; echo "${TEAMS[*]}" | sed 's/,/, /g')")"
+  log "Perfis criados: $( [[ ",$SELECTED_AREAS," == *",TI,"* ]] && echo 'Técnico de TI, Gestor de TI, ')Atendente de Área, Gestor de Área, Gestor de Equipe"
+  log "Chamados atribuídos automaticamente ao grupo da área pela categoria"
+fi
+
 CASCATER_STATUS="não instalado"
 if [[ $INSTALL_CASCATER == S ]]; then
   if CASCATER_VERSION=$(install_cascater); then
@@ -937,7 +1069,16 @@ Chave de criptografia .: $GLPI_CONFIG_DIR/glpicrypt.key  (FAÇA BACKUP!)
 Matriz (entidade raiz) : $GLPI_ROOT_ENTITY
 Filiais ...............: $( (( ${#BRANCHES[@]} )) && (IFS=';'; echo "${BRANCHES[*]}" | sed 's/;/, /g') || echo "nenhuma")
 Categorias criadas ....: $CATEGORIES_CREATED$( [[ $CREATE_CATEGORIES == S ]] && echo " (${SELECTED_AREAS//,/, })")
+Grupos e perfis .......: $ACCESS_SUMMARY
 Plugin Cascater .......: $CASCATER_STATUS
+
+Como liberar o acesso de cada pessoa (Administração > Usuários):
+  - Atendente de RH ....: perfil "Atendente de Área" + grupo "RH"
+  - Gestor do RH .......: perfil "Gestor de Área"    + grupo "RH"
+  - Técnico / Gestor TI : perfil "Técnico de TI" / "Gestor de TI" + grupo "TI"
+  - Gestor de equipe ...: perfil "Gestor de Equipe"  + grupo da equipe
+  - Colaboradores ......: perfil "Self-Service" (padrão) + grupo da sua equipe
+  Somente o perfil Super-Admin vê todos os chamados.
 
 ---------------------- GLPI AGENT / INTUNE -------------------
 ServerUrl .............: $AGENT_URL
@@ -960,6 +1101,7 @@ fi
 echo "  URL p/ o GLPI Agent .: ${C_W}$AGENT_URL${C_N}"
 echo "  Entidades ...........: $GLPI_ROOT_ENTITY + ${#BRANCHES[@]} filial(is)"
 echo "  Categorias ..........: $CATEGORIES_CREATED criadas"
+echo "  Grupos e perfis .....: $ACCESS_SUMMARY"
 echo "  Plugin Cascater .....: $CASCATER_STATUS"
 echo
 echo "  Todas as credenciais foram salvas em $INFO_FILE (somente root)."

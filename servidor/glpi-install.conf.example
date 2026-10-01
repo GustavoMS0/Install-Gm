@@ -67,8 +67,17 @@
 # Criar o catálogo padrão de categorias de atendimento (S/N)
 #CREATE_CATEGORIES="S"
 
-# Áreas do catálogo, separadas por vírgula. Opções: TI, RH, Financeiro, Marketing
+# Áreas do catálogo e dos grupos de atendimento, separadas por vírgula.
+# Opções: TI, RH, Financeiro, Marketing
 #CATEGORY_AREAS="TI,RH,Financeiro,Marketing"
+
+# Criar grupos de atendimento por área, perfis de acesso e regras (S/N).
+# Cada área vê só os seus chamados; só o Super-Admin vê todos. Veja PERFIS-E-PERMISSOES.md
+#CREATE_ACCESS="S"
+
+# Outras equipes/departamentos que só ABREM chamados (o gestor vê os chamados da equipe),
+# separadas por vírgula. Vazio = nenhuma. As áreas acima já viram grupos automaticamente.
+#TEAM_GROUPS="Comercial,Produção,Logística"
 
 # Instalar o plugin Cascater, que mostra as categorias em menus por nível (S/N)
 #INSTALL_CASCATER="S"
