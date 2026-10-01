@@ -29,6 +29,7 @@ Scripts para colocar um **servidor GLPI** no ar em poucos minutos e fazer o **in
 - [Instalar direto do GitHub (guia separado)](INSTALAR-DO-GITHUB.md)
 - [O que você vai precisar](#o-que-você-vai-precisar)
 - [Parte 1: instalar o servidor GLPI](#parte-1-instalar-o-servidor-glpi)
+- [Atualizar um GLPI que já existe](#atualizar-um-glpi-que-já-existe)
 - [Parte 2: distribuir o agente pelo Intune](#parte-2-distribuir-o-agente-pelo-intune)
 - [O que preciso alterar para o meu ambiente?](#o-que-preciso-alterar-para-o-meu-ambiente)
 - [Solução de problemas](#solução-de-problemas)
@@ -94,6 +95,7 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
   Outros departamentos que ATENDEM chamados, além dos padrão (ex.: Jurídico, Compras, Facilities). Enter = nenhum: Jurídico,Compras
   Outras equipes/departamentos que abrem chamados, separados por vírgula (Enter = nenhum): Comercial,Produção
   Instalar o plugin Cascater (seleção de categorias em cascata)? [S/n]:
+  Instalar o plugin GLPI Inventory (descoberta de rede, SNMP, implantação de software)? [S/n]:
 ```
 
 > 📄 Antes de responder, veja o que será criado:
@@ -114,6 +116,7 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
 | **Outros departamentos que atendem** | Departamentos além dos 4 padrão que também **recebem** chamados (ex.: `Jurídico,Compras,Facilities`). Cada um ganha um grupo de atendimento e 3 categorias básicas ([veja quais](CATEGORIAS-PADRAO.md#outros-departamentos)) e funciona igual ao RH: atendentes e gestores veem só os chamados dele |
 | **Outras equipes** | Setores que só **abrem** chamados (ex.: `Comercial,Produção`), para que o gestor de cada um acompanhe os chamados da equipe. Deixe em branco se não houver |
 | **Plugin Cascater** | Troca a lista enorme de categorias por menus por nível (área › grupo › categoria). [Saiba mais](https://github.com/GustavoMS0/Cascater) |
+| **Plugin GLPI Inventory** | Plugin oficial que complementa o inventário nativo com **descoberta de rede**, **inventário SNMP** (switches, impressoras), **implantação de software** e coleta de informações pelos agentes. O script baixa a versão compatível com o GLPI instalado (1.6.x para GLPI 11, 1.5.x para GLPI 10). [Saiba mais](https://github.com/glpi-project/glpi-inventory-plugin) |
 
 No fim ele mostra um resumo e pede confirmação. A instalação leva de 3 a 10 minutos.
 
@@ -220,6 +223,43 @@ Cada categoria já vem marcada como **incidente** (algo parou de funcionar) ou *
   sudo certbot --apache -d glpi.suaempresa.com.br
   ```
 - Configure backups regulares do banco (`mysqldump`) e de `/var/lib/glpi`.
+
+---
+
+## Atualizar um GLPI que já existe
+
+Rode o mesmo comando da instalação no servidor onde o GLPI já está:
+
+```bash
+sudo bash install-glpi.sh
+```
+
+Se ele encontrar um GLPI instalado (em `/var/www/glpi`, `/var/www/html/glpi`, `/usr/share/glpi` ou no caminho informado em `GLPI_EXISTING_DIR`), pergunta o que fazer:
+
+```
+[AVISO] Encontrado o GLPI 10.0.28 em /var/www/glpi
+    [A] Atualizar para o 11.0.10 mantendo TODOS os dados (inventário, chamados, usuários) - recomendado
+    [R] Reinstalar do zero - APAGA todos os dados (as pastas antigas são movidas para .bak)
+    [C] Cancelar
+  Escolha A, R ou C [A]:
+```
+
+### O que a opção [A] Atualizar faz
+
+1. **Lê a instalação atual**: versão, pastas de configuração e de dados (inclusive o layout `/etc/glpi` + `/var/lib/glpi`) e o acesso ao banco, direto do `config_db.php`. Não pergunta senha do banco.
+2. **Coloca o GLPI em manutenção**: os usuários veem um aviso em vez de usar o sistema pela metade.
+3. **Faz backup completo** em `/root/glpi-backup-<data>/`: banco (`.sql.gz`), código, configuração e anexos, além de um `COMO-VOLTAR.txt` com os comandos para desfazer tudo. Se o backup falhar, **nada é alterado**.
+4. **Ajusta PHP e Apache** para a versão exigida (GLPI 11: PHP 8.2 ou superior; o DocumentRoot passa para `/public`).
+5. **Troca o código** pela versão nova, mantendo configuração, anexos, plugins e marketplace. A versão anterior fica em `<pasta>.old-<data>`.
+6. **Atualiza o banco** (`db:update`), passando por todas as versões intermediárias.
+7. **Atualiza os plugins**: baixa a versão do **GLPI Inventory** e do **Cascater** compatível com o GLPI novo, retoma a execução dos plugins (o GLPI 11 os suspende depois de atualizar) e reativa.
+8. **Tira da manutenção** e mostra a situação de cada plugin.
+
+> **Antes de atualizar a produção:** tire um **snapshot da VM**, se possível, e faça a atualização num horário sem uso. Plugins de terceiros sem versão para o GLPI novo ficam desativados até você instalar uma versão compatível. O resumo final lista esses plugins.
+
+### Inventário e agentes
+
+O inventário (computadores, softwares, componentes) **é mantido**, e a URL do agente continua a mesma (`http://servidor:porta/front/inventory.php`). Os agentes já instalados, inclusive os distribuídos pelo Intune, continuam enviando normalmente.
 
 ---
 
@@ -398,7 +438,7 @@ No computador, veja `C:\ProgramData\GLPI-Agent-Intune\install.log`. O erro mais 
 A última versão **estável** publicada em [github.com/glpi-project/glpi/releases](https://github.com/glpi-project/glpi/releases). Versões beta e RC são ignoradas. Para fixar uma versão, use `GLPI_VERSION="11.0.10"` no arquivo de configuração.
 
 **Posso rodar o script num servidor que já tem GLPI?**
-Pode, mas ele foi feito para instalações novas. Se encontrar uma instalação anterior, ele **move** as pastas antigas para `*.bak-<data>` e pergunta antes de apagar uma base existente. Para **atualizar** um GLPI que já existe, siga a [documentação oficial de atualização](https://glpi-install.readthedocs.io/).
+Pode. Ele detecta a instalação e oferece **atualizar mantendo todos os dados**. Veja [Atualizar um GLPI que já existe](#atualizar-um-glpi-que-já-existe).
 
 **Funciona com CentOS, Rocky ou RHEL?**
 Ainda não. Por enquanto só Debian e Ubuntu (e derivados).

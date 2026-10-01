@@ -87,6 +87,20 @@
 # Instalar o plugin Cascater, que mostra as categorias em menus por nível (S/N)
 #INSTALL_CASCATER="S"
 
+# Instalar o plugin oficial GLPI Inventory (descoberta de rede, SNMP, implantação) (S/N)
+#INSTALL_GLPIINVENTORY="S"
+
+# ---------------------------- GLPI já instalado ------------------------------
+# O que fazer se encontrar um GLPI instalado: A = atualizar mantendo os dados,
+# R = reinstalar do zero (APAGA tudo; exige REINSTALL_CONFIRM="APAGAR"), C = cancelar
+#INSTALL_MODE="A"
+
+# Caminho do GLPI existente, se não estiver em /var/www/glpi, /var/www/html/glpi ou /usr/share/glpi
+#GLPI_EXISTING_DIR="/var/www/glpi"
+
+# Onde salvar o backup feito antes da atualização (padrão: /root)
+#GLPI_BACKUP_DIR="/root"
+
 # ---------------------------- Automação --------------------------------------
 # S = apaga e reinstala se a base já existir (CUIDADO!)
 #OVERWRITE="N"

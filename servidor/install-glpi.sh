@@ -21,7 +21,10 @@
 #   10. Cria o catálogo padrão de categorias (TI, RH, Financeiro, Marketing)
 #   11. Cria grupos de atendimento por área, perfis de acesso e regras
 #       (cada área vê só os seus chamados; só o Super-Admin vê todos)
-#   12. Instala e ativa o plugin Cascater (categorias em cascata)
+#   12. Instala e ativa os plugins Cascater e GLPI Inventory
+#
+#  Se encontrar um GLPI já instalado, oferece ATUALIZAR mantendo todos os dados
+#  (backup completo, código novo, db:update e plugins compatíveis) ou reinstalar.
 #
 #  Modo não interativo: qualquer variável abaixo pode ser pré-definida em um
 #  arquivo de configuração (veja glpi-install.conf.example) ou no ambiente;
@@ -33,6 +36,7 @@
 #             DB_USER_HOST DB_PASS GLPI_ADMIN_PASS DISABLE_DEFAULT_USERS
 #             GLPI_ROOT_ENTITY GLPI_BRANCHES CREATE_CATEGORIES CATEGORY_AREAS
 #             EXTRA_AREAS CREATE_ACCESS TEAM_GROUPS INSTALL_CASCATER CASCATER_REPO
+#             INSTALL_GLPIINVENTORY INSTALL_MODE GLPI_EXISTING_DIR GLPI_BACKUP_DIR
 #             OVERWRITE CONFIRM
 # =============================================================================
 set -Eeuo pipefail
@@ -282,10 +286,23 @@ create_categories() {
 }
 
 # Baixa (Release mais recente ou branch principal) e instala o plugin Cascater
-install_cascater() {
-  local repo=${CASCATER_REPO:-GustavoMS0/Cascater} tmp url
-  tmp=$(mktemp -d); TMP_FILES+=("$tmp")
+WORK_TMP=""
+work_tmp() { # diretório temporário removido no fim do script
+  [[ -n $WORK_TMP ]] || { WORK_TMP=$(mktemp -d); TMP_FILES+=("$WORK_TMP"); }
+  mktemp -d -p "$WORK_TMP"
+}
 
+copy_plugin() { # copy_plugin origem chave  -> plugins/<chave>, código pertencente ao root
+  rm -rf "${GLPI_DIR:?}/plugins/$2"
+  cp -r "$1" "$GLPI_DIR/plugins/$2"
+  chown -R root:root "$GLPI_DIR/plugins/$2"
+  chmod -R u=rwX,go=rX "$GLPI_DIR/plugins/$2"
+}
+
+# Baixa o Cascater (Release mais recente ou branch principal). Imprime a versão.
+fetch_cascater() {
+  local repo=${CASCATER_REPO:-GustavoMS0/Cascater} tmp url
+  tmp=$(work_tmp)
   url=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null \
         | jq -r '[.assets[]? | select(.name | test("^cascater-.*\\.zip$"))][0].browser_download_url // empty' 2>/dev/null || true)
   if [[ -n $url ]]; then
@@ -294,15 +311,248 @@ install_cascater() {
     curl -fsSL "https://codeload.github.com/$repo/tar.gz/refs/heads/main" | tar -xz -C "$tmp" --strip-components=1 || return 1
   fi
   [[ -f $tmp/Cascater/setup.php ]] || return 1
-
-  rm -rf "$GLPI_DIR/plugins/Cascater"
-  cp -r "$tmp/Cascater" "$GLPI_DIR/plugins/Cascater"
-  chown -R root:root "$GLPI_DIR/plugins/Cascater"
-  chmod -R u=rwX,go=rX "$GLPI_DIR/plugins/Cascater"
-
-  glpi_console plugin:install --username=glpi --no-interaction Cascater >/dev/null 2>&1 || return 1
-  glpi_console plugin:activate --no-interaction Cascater >/dev/null 2>&1 || return 1
+  copy_plugin "$tmp/Cascater" Cascater
   grep -oP "PLUGIN_CASCATER_VERSION', '\K[^']+" "$GLPI_DIR/plugins/Cascater/setup.php" 2>/dev/null || echo "?"
+}
+
+# Baixa o plugin oficial GLPI Inventory na linha compatível com o GLPI:
+# 1.6.x -> GLPI 11 | 1.5.x -> GLPI 10. Imprime a versão.
+fetch_glpiinventory() { # fetch_glpiinventory versão_maior_do_glpi
+  local prefix tag tmp
+  case $1 in
+    11) prefix="1.6." ;;
+    10) prefix="1.5." ;;
+    *)  return 1 ;;
+  esac
+  tag=$(curl -fsSL "https://api.github.com/repos/glpi-project/glpi-inventory-plugin/releases?per_page=60" 2>/dev/null \
+        | jq -r --arg p "$prefix" '[.[] | select((.draft | not) and (.prerelease | not) and (.tag_name | startswith($p)))][0].tag_name // empty' 2>/dev/null || true)
+  [[ -n $tag ]] || return 1
+  tmp=$(work_tmp)
+  curl -fsSL -o "$tmp/glpiinventory.tar.bz2" \
+    "https://github.com/glpi-project/glpi-inventory-plugin/releases/download/$tag/glpi-glpiinventory-$tag.tar.bz2" || return 1
+  tar -xjf "$tmp/glpiinventory.tar.bz2" -C "$tmp" || return 1
+  [[ -f $tmp/glpiinventory/setup.php ]] || return 1
+  copy_plugin "$tmp/glpiinventory" glpiinventory
+  echo "$tag"
+}
+
+# Instala (ou atualiza) e ativa um plugin já copiado para plugins/<chave>.
+# O GLPI retorna erro quando o plugin já está instalado/ativo, então o resultado
+# é conferido pelo estado gravado no banco (1 = ativado).
+plugin_enable() {
+  local state
+  glpi_console plugin:install --username="${PLUGIN_ADMIN:-glpi}" --no-interaction "$1" >/dev/null 2>&1 || true
+  glpi_console plugin:activate --no-interaction "$1" >/dev/null 2>&1 || true
+  state=$(db_glpi -N -e "SELECT state FROM glpi_plugins WHERE directory = '$(sql_escape "$1")'" 2>/dev/null || true)
+  [[ $state == 1 ]]
+}
+
+# --- Instalação existente (modo atualização) ---------------------------------
+glpi_version_in() { # versão do GLPI instalado em um diretório
+  # GLPI 11: src/autoload/constants.php | GLPI 10: inc/define.php (um dos dois não existe)
+  local f
+  for f in "$1/src/autoload/constants.php" "$1/inc/define.php"; do
+    [[ -f $f ]] && grep -oP "define\('GLPI_VERSION', '\K[^']+" "$f" 2>/dev/null && return 0
+  done
+  return 0
+}
+
+glpi_config_dir_of() { # diretório de configuração (respeita inc/downstream.php)
+  local cfg
+  cfg=""
+  [[ -f $1/inc/downstream.php ]] && cfg=$(grep -m1 -oP "define\('GLPI_CONFIG_DIR',\s*'\K[^']+" "$1/inc/downstream.php" || true)
+  cfg=${cfg:-$1/config}
+  echo "${cfg%/}"
+}
+
+glpi_var_dir_of() { # diretório de dados: GLPI_VAR_DIR do local_define.php, senão <glpi>/files
+  local var
+  var=""
+  [[ -f $2/local_define.php ]] && var=$(grep -m1 -oP "define\('GLPI_VAR_DIR',\s*'\K[^']+" "$2/local_define.php" || true)
+  var=${var:-$1/files}
+  echo "${var%/}"
+}
+
+# Lê as credenciais do config_db.php sem carregar o GLPI.
+# A senha é gravada com rawurlencode pelo GLPI. Define OLD_DB* (host, porta, usuário, senha, base).
+read_glpi_db_config() {
+  local json host
+  json=$(php -r 'class DBmysql {} require $argv[1]; $d = new DB();
+    echo json_encode([$d->dbhost, $d->dbuser, rawurldecode($d->dbpassword), $d->dbdefault]);' "$1" 2>/dev/null) || return 1
+  host=$(jq -r '.[0]' <<<"$json")
+  OLD_DBUSER=$(jq -r '.[1]' <<<"$json")
+  OLD_DBPASS=$(jq -r '.[2]' <<<"$json")
+  OLD_DBNAME=$(jq -r '.[3]' <<<"$json")
+  OLD_DBHOST=$host; OLD_DBPORT=3306
+  if [[ $host =~ ^(.+):([0-9]+)$ ]]; then OLD_DBHOST=${BASH_REMATCH[1]}; OLD_DBPORT=${BASH_REMATCH[2]}; fi
+  [[ -n $OLD_DBNAME && -n $OLD_DBUSER ]]
+}
+
+# Ajusta o VirtualHost do Apache para o DocumentRoot em /public (exigência do GLPI 11)
+fix_apache_docroot() { # fix_apache_docroot diretório_glpi carimbo
+  local dir=$1 ts=$2 conf changed=0
+  for conf in /etc/apache2/sites-enabled/*.conf; do
+    [[ -f $conf ]] || continue
+    grep -qE "^[[:space:]]*DocumentRoot[[:space:]]+\"?$dir/?\"?[[:space:]]*$" "$conf" || continue
+    conf=$(readlink -f "$conf")
+    cp -a "$conf" "$conf.bak-$ts"
+    sed -i -E "s#^([[:space:]]*DocumentRoot[[:space:]]+)\"?$dir/?\"?[[:space:]]*\$#\1$dir/public#" "$conf"
+    if ! grep -q 'RewriteRule \^(\.\*)\$ index\.php' "$conf"; then
+      sed -i "0,/<\/VirtualHost>/s##    <Directory $dir/public>\n        Require all granted\n        RewriteEngine On\n        RewriteCond %{HTTP:Authorization} ^(.+)\$\n        RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]\n        RewriteCond %{REQUEST_FILENAME} !-f\n        RewriteRule ^(.*)\$ index.php [QSA,L]\n    </Directory>\n</VirtualHost>#" "$conf"
+    fi
+    log "VirtualHost ajustado para $dir/public ($conf; backup em $conf.bak-$ts)"
+    changed=1
+  done
+  a2enmod -q rewrite >/dev/null
+  if ! apachectl configtest >/dev/null 2>&1; then
+    for conf in /etc/apache2/sites-available/*.bak-"$ts"; do [[ -f $conf ]] && mv "$conf" "${conf%.bak-$ts}"; done
+    die "A configuração do Apache ficou inválida e foi restaurada. Ajuste o DocumentRoot para $dir/public manualmente."
+  fi
+  (( changed )) || info "Nenhum VirtualHost com DocumentRoot em $dir encontrado (já usa /public ou outro caminho)."
+}
+
+# Atualiza a instalação existente mantendo todos os dados. Encerra o script ao terminar.
+run_upgrade() {
+  local old=$EXISTING_DIR prev ts backup cfg var tmp tgz free need p name status console_cmds
+  ts=$(date +%Y%m%d-%H%M%S)
+  backup="${GLPI_BACKUP_DIR:-/root}/glpi-backup-$ts"
+  GLPI_DIR=$old
+  cfg=$(glpi_config_dir_of "$old")
+  var=$(glpi_var_dir_of "$old" "$cfg")
+
+  read_glpi_db_config "$cfg/config_db.php" || die "Não foi possível ler $cfg/config_db.php."
+  DB_HOST=$OLD_DBHOST; DB_PORT=$OLD_DBPORT; DB_USER=$OLD_DBUSER; DB_PASS=$OLD_DBPASS; DB_NAME=$OLD_DBNAME
+  command -v mysql >/dev/null 2>&1 || apt-get install -y -qq mariadb-client >/dev/null
+  GLPI_CNF=$(mktemp); TMP_FILES+=("$GLPI_CNF")
+  make_mycnf "$GLPI_CNF" "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_PASS"
+  db_glpi -e "SELECT 1" >/dev/null 2>&1 || die "Sem conexão com a base '$DB_NAME' em $DB_HOST:$DB_PORT (dados do config_db.php)."
+  PLUGIN_ADMIN=$(db_glpi -N -e "SELECT u.name FROM glpi_users u
+      JOIN glpi_profiles_users pu ON pu.users_id = u.id JOIN glpi_profiles p ON p.id = pu.profiles_id
+      WHERE p.name = 'Super-Admin' AND u.is_active = 1 AND u.is_deleted = 0 ORDER BY u.id LIMIT 1" 2>/dev/null || true)
+  PLUGIN_ADMIN=${PLUGIN_ADMIN:-glpi}
+
+  echo
+  echo "  ${C_W}Resumo da atualização:${C_N}"
+  echo "    GLPI ............: $EXISTING_VERSION  ->  $GLPI_VERSION"
+  echo "    Código ..........: $old"
+  echo "    Configuração ....: $cfg"
+  echo "    Dados (files) ...: $var"
+  echo "    Banco ...........: $DB_NAME em $DB_HOST:$DB_PORT"
+  echo "    Backup em .......: $backup"
+  echo "    GLPI Inventory ..: $( [[ $INSTALL_GLPIINVENTORY == S ]] && echo "instalar/atualizar" || echo "não mexer")"
+  echo "    Cascater ........: $( [[ $INSTALL_CASCATER == S ]] && echo "instalar/atualizar" || echo "não mexer")"
+  echo "  O GLPI fica em manutenção (fora do ar para os usuários) durante a atualização."
+  echo
+  ask_yn CONFIRM "Prosseguir com a atualização?" S
+  [[ $CONFIRM == S ]] || die "Atualização cancelada pelo usuário."
+
+  title "5/9 Backup completo"
+  need=$(du -sm "$old" "$cfg" "$var" 2>/dev/null | awk '{s+=$1} END {print int(s*1.5)+500}')
+  mkdir -p "${GLPI_BACKUP_DIR:-/root}"
+  free=$(df -Pm "${GLPI_BACKUP_DIR:-/root}" | awk 'NR==2 {print $4}')
+  (( free > need )) || die "Espaço insuficiente em ${GLPI_BACKUP_DIR:-/root} para o backup: ${free}MB livres, ~${need}MB necessários."
+  mkdir -p "$backup"; chmod 700 "$backup"
+  glpi_console maintenance:enable --no-interaction >/dev/null 2>&1 || warn "Não foi possível ativar o modo de manutenção."
+  mysqldump --defaults-extra-file="$GLPI_CNF" --single-transaction --routines --triggers --no-tablespaces "$DB_NAME" \
+    | gzip >"$backup/banco-$DB_NAME.sql.gz" || die "Falha no backup do banco. Nada foi alterado."
+  tar -czf "$backup/codigo.tar.gz" -C "$(dirname "$old")" "$(basename "$old")" || die "Falha no backup dos arquivos. Nada foi alterado."
+  [[ $cfg == "$old"/* ]] || tar -czf "$backup/config.tar.gz" -C "$(dirname "$cfg")" "$(basename "$cfg")"
+  [[ $var == "$old"/* ]] || tar -czf "$backup/dados.tar.gz" -C "$(dirname "$var")" "$(basename "$var")"
+  log "Backup salvo em $backup ($(du -sh "$backup" | cut -f1))"
+
+  cat >"$backup/COMO-VOLTAR.txt" <<EOF
+Para desfazer a atualização e voltar ao GLPI $EXISTING_VERSION:
+  systemctl stop apache2
+  rm -rf "$old" && tar -xzf "$backup/codigo.tar.gz" -C "$(dirname "$old")"
+$( [[ $cfg == "$old"/* ]] || echo "  rm -rf \"$cfg\" && tar -xzf \"$backup/config.tar.gz\" -C \"$(dirname "$cfg")\"")
+$( [[ $var == "$old"/* ]] || echo "  rm -rf \"$var\" && tar -xzf \"$backup/dados.tar.gz\" -C \"$(dirname "$var")\"")
+  mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p -e 'DROP DATABASE \`$DB_NAME\`; CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
+  gunzip -c "$backup/banco-$DB_NAME.sql.gz" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p "$DB_NAME"
+  for f in /etc/apache2/sites-available/*.bak-$ts; do mv "\$f" "\${f%.bak-$ts}"; done
+  systemctl start apache2
+EOF
+  chmod 600 "$backup/COMO-VOLTAR.txt"
+
+  if [[ $EXISTING_VERSION != "$GLPI_VERSION" ]]; then
+    title "6/9 Ajustando Apache e PHP para o GLPI $GLPI_VERSION"
+    setup_php_apache
+
+    title "7/9 Atualizando os arquivos do GLPI"
+    tmp=$(work_tmp); tgz="$tmp/glpi.tgz"
+    curl -fL --retry 3 --progress-bar -o "$tgz" "$GLPI_URL_TGZ" || die "Falha no download. Nada foi alterado; desative a manutenção com: php $old/bin/console maintenance:disable"
+    tar -xzf "$tgz" -C "$tmp" && [[ -f $tmp/glpi/bin/console ]] || die "Pacote do GLPI inválido."
+    prev="$old.old-$ts"
+    mv "$old" "$prev"
+    mv "$tmp/glpi" "$old"
+    if [[ $cfg == "$old/config" ]]; then cp -a "$prev/config/." "$old/config/"; fi
+    if [[ $var == "$old/files" ]]; then rm -rf "$old/files"; mv "$prev/files" "$old/files"; fi
+    [[ -f $prev/inc/downstream.php ]] && cp -a "$prev/inc/downstream.php" "$old/inc/downstream.php"
+    for p in "$prev"/plugins/*/; do
+      [[ -d $p ]] || continue
+      name=$(basename "$p")
+      [[ -e $old/plugins/$name ]] || cp -a "$p" "$old/plugins/$name"
+    done
+    mkdir -p "$old/marketplace"
+    [[ -d $prev/marketplace ]] && cp -a "$prev/marketplace/." "$old/marketplace/"
+    chown -R root:root "$old"
+    chown -R www-data:www-data "$old/marketplace"
+    [[ $cfg == "$old/config" ]] && chown -R www-data:www-data "$old/config"
+    [[ $var == "$old/files" ]] && chown -R www-data:www-data "$old/files"
+    for p in "$prev"/plugins/*/; do [[ -d $p ]] && chown -R --reference="$p" "$old/plugins/$(basename "$p")"; done
+    log "Arquivos do GLPI $GLPI_VERSION no lugar (versão anterior em $prev)"
+
+    (( GLPI_MAJOR >= 11 )) && fix_apache_docroot "$old" "$ts"
+    systemctl restart apache2
+
+    title "8/9 Atualizando o banco de dados"
+    if ! glpi_console db:update --no-interaction; then
+      warn "A atualização do banco falhou. Para voltar à versão anterior, siga $backup/COMO-VOLTAR.txt"
+      die "db:update falhou."
+    fi
+    log "Banco atualizado para o GLPI $GLPI_VERSION"
+  else
+    log "O GLPI já está na versão mais recente ($GLPI_VERSION); só os plugins serão verificados."
+  fi
+
+  title "9/9 Plugins"
+  # Com os arquivos novos no lugar, retoma os plugins (o GLPI 11 os suspende após atualizar)
+  local inv_ver="" cas_ver=""
+  if [[ $INSTALL_GLPIINVENTORY == S ]]; then
+    inv_ver=$(fetch_glpiinventory "$GLPI_MAJOR") || { inv_ver=""; warn "Não foi possível baixar o GLPI Inventory compatível."; }
+  fi
+  if [[ $INSTALL_CASCATER == S ]]; then
+    cas_ver=$(fetch_cascater) || { cas_ver=""; warn "Não foi possível baixar o Cascater."; }
+  fi
+  console_cmds=$(glpi_console list --raw 2>/dev/null || true)
+  if grep -q '^plugin:resume_execution' <<<"$console_cmds"; then
+    glpi_console plugin:resume_execution --no-interaction >/dev/null 2>&1 || true
+  fi
+  [[ -n $inv_ver ]] && { plugin_enable glpiinventory && log "GLPI Inventory $inv_ver instalado/atualizado e ativo" || warn "Falha ao ativar o GLPI Inventory."; }
+  [[ -n $cas_ver ]] && { plugin_enable Cascater && log "Cascater $cas_ver instalado/atualizado e ativo" || warn "Falha ao ativar o Cascater."; }
+
+  glpi_console maintenance:disable --no-interaction >/dev/null 2>&1 || true
+  glpi_console cache:clear --no-interaction >/dev/null 2>&1 || true
+  if [[ -d /etc/cron.d && ! -f /etc/cron.d/glpi ]]; then
+    echo "* * * * * www-data /usr/bin/php $old/front/cron.php >/dev/null 2>&1" >/etc/cron.d/glpi
+    chmod 644 /etc/cron.d/glpi
+  fi
+
+  echo
+  info "Situação dos plugins:"
+  glpi_console plugin:list 2>/dev/null | sed 's/^/    /' || true
+  local port
+  port=$(cat /etc/apache2/sites-enabled/*.conf 2>/dev/null | grep -m1 -oP '<VirtualHost \*:\K[0-9]+' || true)
+  status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:${port:-80}/" || true)
+  echo
+  echo "${C_G}${C_W}  Atualização concluída: GLPI $EXISTING_VERSION -> $GLPI_VERSION${C_N}"
+  echo "  Resposta HTTP local ..: $status"
+  echo "  Backup ...............: $backup"
+  echo "  Como voltar ..........: $backup/COMO-VOLTAR.txt"
+  [[ -n ${prev:-} ]] && echo "  Versão anterior ......: $prev (apague depois de validar)"
+  echo "  Plugins marcados como 'Para atualizar' ou 'Não instalado' acima precisam de uma versão"
+  echo "  compatível com o GLPI $GLPI_VERSION (veja Configurar > Plugins > Marketplace)."
+  echo "  Log completo: $LOG_FILE"
+  exit 0
 }
 
 # --- Grupos, perfis e regras de acesso ---------------------------------------
@@ -414,12 +664,101 @@ db_admin() { mysql --defaults-extra-file="$ADMIN_CNF" "$@"; }
 db_glpi()  { mysql --defaults-extra-file="$GLPI_CNF" "$DB_NAME" "$@"; }
 glpi_console() { runuser -u www-data -- php "$GLPI_DIR/bin/console" "$@"; }
 
+distro_php_version() {
+  apt-cache depends php-cli 2>/dev/null | grep -oE 'php[0-9]+\.[0-9]+-cli' | head -n1 | grep -oE '[0-9]+\.[0-9]+' || true
+}
+
+add_php_repo() {
+  info "Adicionando repositório PHP de terceiros (Ondřej Surý)..."
+  if [[ $OS_ID == ubuntu ]]; then
+    apt-get install -y -qq software-properties-common >/dev/null
+    add-apt-repository -y ppa:ondrej/php >/dev/null
+  else
+    local deb=/tmp/debsuryorg-archive-keyring.deb
+    TMP_FILES+=("$deb")
+    curl -fsSLo "$deb" https://packages.sury.org/debsuryorg-archive-keyring.deb
+    dpkg -i "$deb" >/dev/null
+    echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $OS_CODENAME main" \
+      >/etc/apt/sources.list.d/php-sury.list
+  fi
+  apt-get update -qq
+}
+
+# Instala/ajusta Apache + PHP (versão exigida pelo GLPI alvo) e o php.ini recomendado
+setup_php_apache() {
+local m mod d sapi ext
+
+PHP_VER=$(distro_php_version)
+if [[ -z $PHP_VER ]] || ! version_ge "$PHP_VER" "$PHP_MIN"; then
+  warn "PHP da distribuição (${PHP_VER:-nenhum}) é inferior ao exigido ($PHP_MIN)."
+  add_php_repo
+  PHP_VER="8.3"
+fi
+log "Versão do PHP escolhida: $PHP_VER"
+
+PHP_EXTS=(cli common mysql curl gd intl mbstring xml zip bz2 ldap bcmath apcu opcache)
+PKGS=(apache2 "libapache2-mod-php$PHP_VER")
+for ext in "${PHP_EXTS[@]}"; do
+  if pkg_exists "php$PHP_VER-$ext"; then PKGS+=("php$PHP_VER-$ext")
+  elif pkg_exists "php-$ext"; then PKGS+=("php-$ext")
+  else warn "Pacote da extensão PHP '$ext' não encontrado (ignorado)."
+  fi
+done
+info "Instalando: ${PKGS[*]}"
+apt-get install -y -qq "${PKGS[@]}" >/dev/null
+
+if [[ -x /usr/bin/php$PHP_VER ]]; then update-alternatives --set php "/usr/bin/php$PHP_VER" >/dev/null 2>&1 || true; fi
+
+# Garante que somente o mod_php da versão escolhida está ativo
+for m in /etc/apache2/mods-enabled/php*.load; do
+  [[ -e $m ]] || continue
+  mod=$(basename "$m" .load)
+  [[ $mod == "php$PHP_VER" ]] || a2dismod -q "$mod" >/dev/null
+done
+a2dismod -q mpm_event >/dev/null 2>&1 || true
+a2enmod -q mpm_prefork "php$PHP_VER" rewrite headers >/dev/null
+
+# Validação das extensões (lista do RequirementsManager do GLPI)
+PHP_MODS=$(php -m)
+REQUIRED_EXTS=(curl dom fileinfo filter gd intl libxml mbstring mysqli openssl session simplexml tokenizer xmlreader xmlwriter zlib)
+(( GLPI_MAJOR >= 11 )) && REQUIRED_EXTS+=(bcmath sodium)
+MISSING=()
+for ext in "${REQUIRED_EXTS[@]}"; do
+  grep -qix "$ext" <<<"$PHP_MODS" || MISSING+=("$ext")
+done
+(( ${#MISSING[@]} == 0 )) || die "Extensões PHP obrigatórias ausentes: ${MISSING[*]}"
+for ext in bz2 exif ldap Phar zip ctype iconv apcu "Zend OPcache"; do
+  grep -qix "$ext" <<<"$PHP_MODS" || warn "Extensão PHP opcional ausente: $ext"
+done
+log "PHP $(php -r 'echo PHP_VERSION;') com todas as extensões obrigatórias"
+
+# php.ini recomendado para o GLPI
+for sapi in apache2 cli; do
+  d="/etc/php/$PHP_VER/$sapi/conf.d"
+  [[ -d $d ]] || continue
+  cat >"$d/99-glpi.ini" <<EOF
+; Gerado por install-glpi.sh
+memory_limit = 256M
+upload_max_filesize = 64M
+post_max_size = 64M
+max_execution_time = 600
+max_input_vars = 5000
+file_uploads = On
+session.use_strict_mode = 1
+session.cookie_httponly = On
+session.cookie_samesite = Lax
+date.timezone = $GLPI_TZ
+EOF
+done
+log "php.ini ajustado (/etc/php/$PHP_VER/*/conf.d/99-glpi.ini)"
+}
+
 # -----------------------------------------------------------------------------
 # 0. Verificações iniciais
 # -----------------------------------------------------------------------------
 case "${1-}" in
   -h|--help)
-    sed -n '3,37p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,40p' "$0" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   "") ;;
   *)
@@ -508,6 +847,45 @@ else
   PHP_MIN="7.4"; MARIADB_MIN="10.2"; MYSQL_MIN="5.7"
 fi
 log "Versão estável mais recente: GLPI $GLPI_VERSION (PHP >= $PHP_MIN, MariaDB >= $MARIADB_MIN / MySQL >= $MYSQL_MIN)"
+
+# -----------------------------------------------------------------------------
+# GLPI já instalado? Oferece atualizar mantendo os dados
+# -----------------------------------------------------------------------------
+EXISTING_DIR=""
+for d in "${GLPI_EXISTING_DIR:-}" /var/www/glpi /var/www/html/glpi /usr/share/glpi /var/www/html /srv/glpi; do
+  [[ -n $d && -f $d/bin/console && -n $(glpi_version_in "$d") ]] && { EXISTING_DIR=${d%/}; break; }
+done
+if [[ -n $EXISTING_DIR ]]; then
+  EXISTING_VERSION=$(glpi_version_in "$EXISTING_DIR")
+  version_ge "$GLPI_VERSION" "$EXISTING_VERSION" || die "O GLPI instalado ($EXISTING_VERSION) é mais novo que o disponível ($GLPI_VERSION)."
+  echo
+  warn "Encontrado o GLPI $EXISTING_VERSION em $EXISTING_DIR"
+  echo "    [A] Atualizar para o $GLPI_VERSION mantendo TODOS os dados (inventário, chamados, usuários) - recomendado"
+  echo "    [R] Reinstalar do zero - APAGA todos os dados (as pastas antigas são movidas para .bak)"
+  echo "    [C] Cancelar"
+  while true; do
+    ask INSTALL_MODE "Escolha A, R ou C" "A"
+    case ${INSTALL_MODE^^} in A|R|C) INSTALL_MODE=${INSTALL_MODE^^}; break ;; esac
+    unset INSTALL_MODE
+  done
+  [[ $INSTALL_MODE == C ]] && die "Cancelado pelo usuário."
+
+  if [[ $INSTALL_MODE == A ]]; then
+    if ! command -v apache2 >/dev/null 2>&1 && ! command -v apache2ctl >/dev/null 2>&1; then
+      die "A atualização automática só suporta Apache. Este servidor parece usar outro servidor web; atualize manualmente."
+    fi
+    title "4/9 Configuração da atualização"
+    ask GLPI_TZ "Fuso horário (PHP/GLPI)" "America/Sao_Paulo"
+    ask_yn INSTALL_GLPIINVENTORY "Instalar/atualizar o plugin GLPI Inventory (descoberta de rede, SNMP, implantação)?" S
+    ask_yn INSTALL_CASCATER "Instalar/atualizar o plugin Cascater (seleção de categorias em cascata)?" S
+    run_upgrade
+  fi
+
+  warn "REINSTALAR apaga a base de dados do GLPI: inventário, chamados e usuários serão perdidos."
+  ask REINSTALL_CONFIRM "Para confirmar, digite APAGAR" ""
+  [[ $REINSTALL_CONFIRM == APAGAR ]] || die "Reinstalação não confirmada. Nada foi alterado."
+  [[ $EXISTING_DIR == "$GLPI_DIR" ]] || warn "A nova instalação vai para $GLPI_DIR; a antiga em $EXISTING_DIR não será removida."
+fi
 
 # -----------------------------------------------------------------------------
 # 2. Perguntas
@@ -663,6 +1041,7 @@ fi
 echo
 echo "  -- Plugins --"
 ask_yn INSTALL_CASCATER "Instalar o plugin Cascater (seleção de categorias em cascata)?" S
+ask_yn INSTALL_GLPIINVENTORY "Instalar o plugin GLPI Inventory (descoberta de rede, SNMP, implantação de software)?" S
 
 if [[ $GLPI_PORT == 80 ]]; then GLPI_URL="http://$GLPI_FQDN"; else GLPI_URL="http://$GLPI_FQDN:$GLPI_PORT"; fi
 
@@ -679,6 +1058,7 @@ echo "    Filiais .........: ${#BRANCHES[@]}$( (( ${#BRANCHES[@]} )) && printf '
 echo "    Categorias ......: $( [[ $CREATE_CATEGORIES == S ]] && echo "${SELECTED_AREAS//,/, }" || echo "não criar")"
 echo "    Grupos e perfis .: $( [[ $CREATE_ACCESS == S ]] && echo "${SELECTED_AREAS//,/, }$( (( ${#TEAMS[@]} )) && printf ' + equipes: %s' "$(IFS=','; echo "${TEAMS[*]}" | sed 's/,/, /g')")" || echo "não criar")"
 echo "    Plugin Cascater .: $( [[ $INSTALL_CASCATER == S ]] && echo "instalar" || echo "não instalar")"
+echo "    GLPI Inventory ..: $( [[ $INSTALL_GLPIINVENTORY == S ]] && echo "instalar" || echo "não instalar")"
 echo
 ask_yn CONFIRM "Prosseguir com a instalação?" S
 [[ $CONFIRM == S ]] || die "Instalação cancelada pelo usuário."
@@ -688,89 +1068,7 @@ ask_yn CONFIRM "Prosseguir com a instalação?" S
 # -----------------------------------------------------------------------------
 title "5/11 Instalando Apache e PHP"
 
-distro_php_version() {
-  apt-cache depends php-cli 2>/dev/null | grep -oE 'php[0-9]+\.[0-9]+-cli' | head -n1 | grep -oE '[0-9]+\.[0-9]+' || true
-}
-
-add_php_repo() {
-  info "Adicionando repositório PHP de terceiros (Ondřej Surý)..."
-  if [[ $OS_ID == ubuntu ]]; then
-    apt-get install -y -qq software-properties-common >/dev/null
-    add-apt-repository -y ppa:ondrej/php >/dev/null
-  else
-    local deb=/tmp/debsuryorg-archive-keyring.deb
-    TMP_FILES+=("$deb")
-    curl -fsSLo "$deb" https://packages.sury.org/debsuryorg-archive-keyring.deb
-    dpkg -i "$deb" >/dev/null
-    echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $OS_CODENAME main" \
-      >/etc/apt/sources.list.d/php-sury.list
-  fi
-  apt-get update -qq
-}
-
-PHP_VER=$(distro_php_version)
-if [[ -z $PHP_VER ]] || ! version_ge "$PHP_VER" "$PHP_MIN"; then
-  warn "PHP da distribuição (${PHP_VER:-nenhum}) é inferior ao exigido ($PHP_MIN)."
-  add_php_repo
-  PHP_VER="8.3"
-fi
-log "Versão do PHP escolhida: $PHP_VER"
-
-PHP_EXTS=(cli common mysql curl gd intl mbstring xml zip bz2 ldap bcmath apcu opcache)
-PKGS=(apache2 "libapache2-mod-php$PHP_VER")
-for ext in "${PHP_EXTS[@]}"; do
-  if pkg_exists "php$PHP_VER-$ext"; then PKGS+=("php$PHP_VER-$ext")
-  elif pkg_exists "php-$ext"; then PKGS+=("php-$ext")
-  else warn "Pacote da extensão PHP '$ext' não encontrado (ignorado)."
-  fi
-done
-info "Instalando: ${PKGS[*]}"
-apt-get install -y -qq "${PKGS[@]}" >/dev/null
-
-if [[ -x /usr/bin/php$PHP_VER ]]; then update-alternatives --set php "/usr/bin/php$PHP_VER" >/dev/null 2>&1 || true; fi
-
-# Garante que somente o mod_php da versão escolhida está ativo
-for m in /etc/apache2/mods-enabled/php*.load; do
-  [[ -e $m ]] || continue
-  mod=$(basename "$m" .load)
-  [[ $mod == "php$PHP_VER" ]] || a2dismod -q "$mod" >/dev/null
-done
-a2dismod -q mpm_event >/dev/null 2>&1 || true
-a2enmod -q mpm_prefork "php$PHP_VER" rewrite headers >/dev/null
-
-# Validação das extensões (lista do RequirementsManager do GLPI)
-PHP_MODS=$(php -m)
-REQUIRED_EXTS=(curl dom fileinfo filter gd intl libxml mbstring mysqli openssl session simplexml tokenizer xmlreader xmlwriter zlib)
-(( GLPI_MAJOR >= 11 )) && REQUIRED_EXTS+=(bcmath sodium)
-MISSING=()
-for ext in "${REQUIRED_EXTS[@]}"; do
-  grep -qix "$ext" <<<"$PHP_MODS" || MISSING+=("$ext")
-done
-(( ${#MISSING[@]} == 0 )) || die "Extensões PHP obrigatórias ausentes: ${MISSING[*]}"
-for ext in bz2 exif ldap Phar zip ctype iconv apcu "Zend OPcache"; do
-  grep -qix "$ext" <<<"$PHP_MODS" || warn "Extensão PHP opcional ausente: $ext"
-done
-log "PHP $(php -r 'echo PHP_VERSION;') com todas as extensões obrigatórias"
-
-# php.ini recomendado para o GLPI
-for sapi in apache2 cli; do
-  d="/etc/php/$PHP_VER/$sapi/conf.d"
-  [[ -d $d ]] || continue
-  cat >"$d/99-glpi.ini" <<EOF
-; Gerado por install-glpi.sh
-memory_limit = 256M
-upload_max_filesize = 64M
-post_max_size = 64M
-max_execution_time = 600
-max_input_vars = 5000
-file_uploads = On
-session.use_strict_mode = 1
-session.cookie_httponly = On
-session.cookie_samesite = Lax
-date.timezone = $GLPI_TZ
-EOF
-done
-log "php.ini ajustado (/etc/php/$PHP_VER/*/conf.d/99-glpi.ini)"
+setup_php_apache
 
 # -----------------------------------------------------------------------------
 # 4. Banco de dados
@@ -1027,14 +1325,26 @@ if [[ $CREATE_ACCESS == S ]]; then
   log "Chamados atribuídos automaticamente ao grupo da área pela categoria"
 fi
 
+PLUGIN_ADMIN=glpi
 CASCATER_STATUS="não instalado"
 if [[ $INSTALL_CASCATER == S ]]; then
-  if CASCATER_VERSION=$(install_cascater); then
+  if CASCATER_VERSION=$(fetch_cascater) && plugin_enable Cascater; then
     CASCATER_STATUS="instalado e ativo (v$CASCATER_VERSION)"
     log "Plugin Cascater $CASCATER_VERSION instalado e ativado"
   else
     CASCATER_STATUS="FALHOU (instale manualmente)"
     warn "Não foi possível instalar o Cascater. Instale depois: https://github.com/${CASCATER_REPO:-GustavoMS0/Cascater}"
+  fi
+fi
+
+GLPIINVENTORY_STATUS="não instalado"
+if [[ $INSTALL_GLPIINVENTORY == S ]]; then
+  if GLPIINVENTORY_VERSION=$(fetch_glpiinventory "$GLPI_MAJOR") && plugin_enable glpiinventory; then
+    GLPIINVENTORY_STATUS="instalado e ativo (v$GLPIINVENTORY_VERSION)"
+    log "Plugin GLPI Inventory $GLPIINVENTORY_VERSION instalado e ativado"
+  else
+    GLPIINVENTORY_STATUS="FALHOU (instale manualmente)"
+    warn "Não foi possível instalar o GLPI Inventory. Instale depois: https://github.com/glpi-project/glpi-inventory-plugin"
   fi
 fi
 
@@ -1106,6 +1416,7 @@ Filiais ...............: $( (( ${#BRANCHES[@]} )) && (IFS=';'; echo "${BRANCHES[
 Categorias criadas ....: $CATEGORIES_CREATED$( [[ $CREATE_CATEGORIES == S ]] && echo " (${SELECTED_AREAS//,/, })")
 Grupos e perfis .......: $ACCESS_SUMMARY
 Plugin Cascater .......: $CASCATER_STATUS
+Plugin GLPI Inventory .: $GLPIINVENTORY_STATUS
 
 Como liberar o acesso de cada pessoa (Administração > Usuários):
   - Atendente de RH ....: perfil "Atendente de Área" + grupo "RH"
@@ -1138,6 +1449,7 @@ echo "  Entidades ...........: $GLPI_ROOT_ENTITY + ${#BRANCHES[@]} filial(is)"
 echo "  Categorias ..........: $CATEGORIES_CREATED criadas"
 echo "  Grupos e perfis .....: $ACCESS_SUMMARY"
 echo "  Plugin Cascater .....: $CASCATER_STATUS"
+echo "  GLPI Inventory ......: $GLPIINVENTORY_STATUS"
 echo
 echo "  Todas as credenciais foram salvas em $INFO_FILE (somente root)."
 echo "  Faça backup de $GLPI_CONFIG_DIR/glpicrypt.key e $GLPI_CONFIG_DIR/config_db.php."

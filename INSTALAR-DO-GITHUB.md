@@ -76,6 +76,7 @@ EXTRA_AREAS="Jurídico,Compras"       # outros departamentos que atendem ("" = n
 CREATE_ACCESS="S"                    # grupos por área + perfis (cada área vê só os seus)
 TEAM_GROUPS="Comercial,Produção"     # equipes que só abrem chamados ("" = nenhuma)
 INSTALL_CASCATER="S"
+INSTALL_GLPIINVENTORY="S"            # plugin oficial: descoberta de rede, SNMP, implantação
 
 CONFIRM="S"                          # não pede confirmação final
 ```
@@ -108,6 +109,7 @@ EXTRA_AREAS=""
 CREATE_ACCESS="S"
 TEAM_GROUPS=""
 INSTALL_CASCATER="S"
+INSTALL_GLPIINVENTORY="S"
 
 CONFIRM="S"
 ```
@@ -142,7 +144,7 @@ curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servido
         GLPI_ROOT_ENTITY="Minha Empresa" GLPI_BRANCHES="Filial São Paulo;Filial Rio" \
         CREATE_CATEGORIES="S" CATEGORY_AREAS="TI,RH,Financeiro,Marketing" \
         EXTRA_AREAS="Jurídico" CREATE_ACCESS="S" TEAM_GROUPS="Comercial" INSTALL_CASCATER="S" \
-        CONFIRM="S" bash install-glpi.sh
+        INSTALL_GLPIINVENTORY="S" CONFIRM="S" bash install-glpi.sh
 ```
 
 > Não escreva senhas reais nesta linha: elas ficariam no histórico do terminal (`~/.bash_history`). Deixe as senhas vazias (o script gera senhas fortes e salva em `/root/glpi-install-info.txt`) ou use o modo B.
