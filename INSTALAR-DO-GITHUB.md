@@ -55,6 +55,7 @@ chmod 600 glpi-install.conf
 ```bash
 GLPI_FQDN="glpi.suaempresa.local"   # ou o IP do servidor
 GLPI_PORT="80"
+WEB_SERVER="apache"                  # ou "nginx" (Nginx + PHP-FPM)
 GLPI_LANG="pt_BR"
 GLPI_TZ="America/Sao_Paulo"
 
@@ -87,6 +88,7 @@ CONFIRM="S"                          # não pede confirmação final
 ```bash
 GLPI_FQDN="glpi.suaempresa.local"
 GLPI_PORT="80"
+WEB_SERVER="nginx"
 
 DB_LOCAL="N"
 DB_HOST="10.0.0.20"

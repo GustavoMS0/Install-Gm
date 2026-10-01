@@ -73,6 +73,7 @@ sudo bash install-glpi.sh
 O script faz algumas perguntas. **Na maioria delas basta apertar Enter para aceitar o padrão** (o valor entre colchetes):
 
 ```
+  Servidor web: apache ou nginx [apache]:
   Nome DNS ou IP pelo qual o GLPI será acessado [192.168.1.50]:
   Porta HTTP do Apache [80]:
   Idioma padrão do GLPI [pt_BR]:
@@ -105,6 +106,7 @@ O script faz algumas perguntas. **Na maioria delas basta apertar Enter para acei
 | Pergunta | O que responder |
 |---|---|
 | **Nome DNS ou IP** | O endereço que as pessoas e os agentes usarão para acessar o GLPI |
+| **Servidor web** | `apache` (Apache + mod_php) ou `nginx` (Nginx + PHP-FPM). Os dois recebem a configuração recomendada pela documentação do GLPI. Na dúvida, use `apache` |
 | **Porta HTTP** | `80`, a não ser que outra aplicação já use essa porta |
 | **MariaDB local?** | `S` instala o banco no próprio servidor (recomendado). `N` usa um banco que já existe em outro servidor |
 | **Usuário/senha admin do banco** | No banco local recém-instalado, use `root` e **deixe a senha em branco**. Em banco remoto, informe um usuário com permissão para criar bases e usuários |
@@ -158,7 +160,7 @@ Cada variável definida no arquivo deixa de ser perguntada. Se ela estiver vazia
 
 1. **Verifica os pré-requisitos**: sistema operacional, espaço em disco, memória RAM e acesso à internet.
 2. **Descobre a última versão estável** do GLPI no GitHub oficial e ajusta os requisitos para ela (GLPI 11: PHP 8.2 ou superior, MariaDB 10.6 ou superior).
-3. **Instala o Apache, o PHP e todas as extensões**. Se o PHP da distribuição for antigo demais, adiciona o repositório de PHP do Ondřej Surý.
+3. **Instala o servidor web escolhido (Apache ou Nginx com PHP-FPM), o PHP e todas as extensões**. Se o PHP da distribuição for antigo demais, adiciona o repositório de PHP do Ondřej Surý.
 4. **Prepara o banco**: instala o MariaDB (se for local), cria a base em `utf8mb4`, cria o usuário e carrega os fusos horários.
 5. **Instala o GLPI** no layout seguro recomendado pela documentação oficial:
 
@@ -249,11 +251,13 @@ Se ele encontrar um GLPI instalado (em `/var/www/glpi`, `/var/www/html/glpi`, `/
 1. **Lê a instalação atual**: versão, pastas de configuração e de dados (inclusive o layout `/etc/glpi` + `/var/lib/glpi`) e o acesso ao banco, direto do `config_db.php`. Não pergunta senha do banco.
 2. **Coloca o GLPI em manutenção**: os usuários veem um aviso em vez de usar o sistema pela metade.
 3. **Faz backup completo** em `/root/glpi-backup-<data>/`: banco (`.sql.gz`), código, configuração e anexos, além de um `COMO-VOLTAR.txt` com os comandos para desfazer tudo. Se o backup falhar, **nada é alterado**.
-4. **Ajusta PHP e Apache** para a versão exigida (GLPI 11: PHP 8.2 ou superior; o DocumentRoot passa para `/public`).
+4. **Ajusta o PHP e o servidor web em uso**, detectado automaticamente (Apache ou Nginx), para a versão exigida. GLPI 11: PHP 8.2 ou superior; o site passa a apontar para a pasta `/public`. No Nginx, a configuração do GLPI é regenerada **mantendo porta, nome e certificados SSL**, e o PHP-FPM é apontado para a versão nova.
 5. **Troca o código** pela versão nova, mantendo configuração, anexos, plugins e marketplace. A versão anterior fica em `<pasta>.old-<data>`.
 6. **Atualiza o banco** (`db:update`), passando por todas as versões intermediárias.
 7. **Atualiza os plugins**: baixa a versão do **GLPI Inventory** e do **Cascater** compatível com o GLPI novo, retoma a execução dos plugins (o GLPI 11 os suspende depois de atualizar) e reativa.
 8. **Tira da manutenção** e mostra a situação de cada plugin.
+
+> **Nginx com mais de um bloco `server` no mesmo arquivo** (por exemplo, o redirecionamento 80 → 443 junto com o site): se a configuração ainda não estiver no formato do GLPI 11, o script **para antes de alterar qualquer coisa** e mostra o bloco que precisa ser ajustado. Ajuste e rode de novo.
 
 > **Antes de atualizar a produção:** tire um **snapshot da VM**, se possível, e faça a atualização num horário sem uso. Plugins de terceiros sem versão para o GLPI novo ficam desativados até você instalar uma versão compatível. O resumo final lista esses plugins.
 

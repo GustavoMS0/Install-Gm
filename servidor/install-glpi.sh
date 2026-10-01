@@ -3,7 +3,7 @@
 #  install-glpi.sh - Instalação automatizada da última versão estável do GLPI
 # -----------------------------------------------------------------------------
 #  Sistemas suportados : Debian 11/12/13, Ubuntu 22.04/24.04 (e derivados)
-#  Pilha instalada     : Apache 2 + PHP (mod_php) + MariaDB (local ou remoto)
+#  Pilha instalada     : Apache 2 + PHP (mod_php) ou Nginx + PHP-FPM, e MariaDB (local ou remoto)
 #  Uso                 : sudo bash install-glpi.sh
 #
 #  O script:
@@ -31,7 +31,7 @@
 #  a pergunta correspondente será pulada. Ex.:
 #    sudo bash install-glpi.sh glpi-install.conf
 #    sudo GLPI_PORT=8080 DB_NAME=glpi DB_PASS='xxx' bash install-glpi.sh
-#  Variáveis: GLPI_VERSION GLPI_FQDN GLPI_PORT GLPI_LANG GLPI_TZ DB_LOCAL
+#  Variáveis: GLPI_VERSION WEB_SERVER GLPI_FQDN GLPI_PORT GLPI_LANG GLPI_TZ DB_LOCAL
 #             DB_HOST DB_PORT DB_ADMIN_USER DB_ADMIN_PASS DB_NAME DB_USER
 #             DB_USER_HOST DB_PASS GLPI_ADMIN_PASS DISABLE_DEFAULT_USERS
 #             GLPI_ROOT_ENTITY GLPI_BRANCHES CREATE_CATEGORIES CATEGORY_AREAS
@@ -438,6 +438,7 @@ run_upgrade() {
   echo "    Configuração ....: $cfg"
   echo "    Dados (files) ...: $var"
   echo "    Banco ...........: $DB_NAME em $DB_HOST:$DB_PORT"
+  echo "    Servidor web ....: $WEB_SERVER"
   echo "    Backup em .......: $backup"
   echo "    GLPI Inventory ..: $( [[ $INSTALL_GLPIINVENTORY == S ]] && echo "instalar/atualizar" || echo "não mexer")"
   echo "    Cascater ........: $( [[ $INSTALL_CASCATER == S ]] && echo "instalar/atualizar" || echo "não mexer")"
@@ -445,6 +446,8 @@ run_upgrade() {
   echo
   ask_yn CONFIRM "Prosseguir com a atualização?" S
   [[ $CONFIRM == S ]] || die "Atualização cancelada pelo usuário."
+  # Nginx: confere ANTES de alterar qualquer coisa se a configuração pode ser ajustada
+  [[ $WEB_SERVER == nginx ]] && fix_nginx_conf check "$old" "$ts"
 
   title "5/9 Backup completo"
   need=$(du -sm "$old" "$cfg" "$var" 2>/dev/null | awk '{s+=$1} END {print int(s*1.5)+500}')
@@ -462,20 +465,20 @@ run_upgrade() {
 
   cat >"$backup/COMO-VOLTAR.txt" <<EOF
 Para desfazer a atualização e voltar ao GLPI $EXISTING_VERSION:
-  systemctl stop apache2
+  systemctl stop $WEB_SVC
   rm -rf "$old" && tar -xzf "$backup/codigo.tar.gz" -C "$(dirname "$old")"
 $( [[ $cfg == "$old"/* ]] || echo "  rm -rf \"$cfg\" && tar -xzf \"$backup/config.tar.gz\" -C \"$(dirname "$cfg")\"")
 $( [[ $var == "$old"/* ]] || echo "  rm -rf \"$var\" && tar -xzf \"$backup/dados.tar.gz\" -C \"$(dirname "$var")\"")
   mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p -e 'DROP DATABASE \`$DB_NAME\`; CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
   gunzip -c "$backup/banco-$DB_NAME.sql.gz" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p "$DB_NAME"
-  for f in /etc/apache2/sites-available/*.bak-$ts; do mv "\$f" "\${f%.bak-$ts}"; done
-  systemctl start apache2
+  for f in /etc/apache2/sites-available/*.bak-$ts /etc/nginx/sites-available/*.bak-$ts /etc/nginx/conf.d/*.bak-$ts; do [ -f "\$f" ] && mv "\$f" "\${f%.bak-$ts}"; done
+  systemctl start $WEB_SVC
 EOF
   chmod 600 "$backup/COMO-VOLTAR.txt"
 
   if [[ $EXISTING_VERSION != "$GLPI_VERSION" ]]; then
-    title "6/9 Ajustando Apache e PHP para o GLPI $GLPI_VERSION"
-    setup_php_apache
+    title "6/9 Ajustando servidor web ($WEB_SERVER) e PHP para o GLPI $GLPI_VERSION"
+    setup_php_web
 
     title "7/9 Atualizando os arquivos do GLPI"
     tmp=$(work_tmp); tgz="$tmp/glpi.tgz"
@@ -501,8 +504,12 @@ EOF
     for p in "$prev"/plugins/*/; do [[ -d $p ]] && chown -R --reference="$p" "$old/plugins/$(basename "$p")"; done
     log "Arquivos do GLPI $GLPI_VERSION no lugar (versão anterior em $prev)"
 
-    (( GLPI_MAJOR >= 11 )) && fix_apache_docroot "$old" "$ts"
-    systemctl restart apache2
+    if [[ $WEB_SERVER == nginx ]]; then
+      fix_nginx_conf apply "$old" "$ts"
+    else
+      (( GLPI_MAJOR >= 11 )) && fix_apache_docroot "$old" "$ts"
+      systemctl restart apache2
+    fi
 
     title "8/9 Atualizando o banco de dados"
     if ! glpi_console db:update --no-interaction; then
@@ -541,7 +548,11 @@ EOF
   info "Situação dos plugins:"
   glpi_console plugin:list 2>/dev/null | sed 's/^/    /' || true
   local port
-  port=$(cat /etc/apache2/sites-enabled/*.conf 2>/dev/null | grep -m1 -oP '<VirtualHost \*:\K[0-9]+' || true)
+  if [[ $WEB_SERVER == nginx ]]; then
+    port=$(cat "${NGINX_CONF:-/dev/null}" 2>/dev/null | grep -m1 -oP '^\s*listen\s+(\S+:)?\K[0-9]+' || true)
+  else
+    port=$(cat /etc/apache2/sites-enabled/*.conf 2>/dev/null | grep -m1 -oP '<VirtualHost \*:\K[0-9]+' || true)
+  fi
   status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:${port:-80}/" || true)
   echo
   echo "${C_G}${C_W}  Atualização concluída: GLPI $EXISTING_VERSION -> $GLPI_VERSION${C_N}"
@@ -685,7 +696,8 @@ add_php_repo() {
 }
 
 # Instala/ajusta Apache + PHP (versão exigida pelo GLPI alvo) e o php.ini recomendado
-setup_php_apache() {
+# WEB_SERVER=apache: Apache + mod_php | WEB_SERVER=nginx: Nginx + PHP-FPM (define PHP_FPM_SOCK)
+setup_php_web() {
 local m mod d sapi ext
 
 PHP_VER=$(distro_php_version)
@@ -697,7 +709,11 @@ fi
 log "Versão do PHP escolhida: $PHP_VER"
 
 PHP_EXTS=(cli common mysql curl gd intl mbstring xml zip bz2 ldap bcmath apcu opcache)
-PKGS=(apache2 "libapache2-mod-php$PHP_VER")
+if [[ $WEB_SERVER == nginx ]]; then
+  PKGS=(nginx "php$PHP_VER-fpm")
+else
+  PKGS=(apache2 "libapache2-mod-php$PHP_VER")
+fi
 for ext in "${PHP_EXTS[@]}"; do
   if pkg_exists "php$PHP_VER-$ext"; then PKGS+=("php$PHP_VER-$ext")
   elif pkg_exists "php-$ext"; then PKGS+=("php-$ext")
@@ -709,14 +725,20 @@ apt-get install -y -qq "${PKGS[@]}" >/dev/null
 
 if [[ -x /usr/bin/php$PHP_VER ]]; then update-alternatives --set php "/usr/bin/php$PHP_VER" >/dev/null 2>&1 || true; fi
 
-# Garante que somente o mod_php da versão escolhida está ativo
-for m in /etc/apache2/mods-enabled/php*.load; do
-  [[ -e $m ]] || continue
-  mod=$(basename "$m" .load)
-  [[ $mod == "php$PHP_VER" ]] || a2dismod -q "$mod" >/dev/null
-done
-a2dismod -q mpm_event >/dev/null 2>&1 || true
-a2enmod -q mpm_prefork "php$PHP_VER" rewrite headers >/dev/null
+if [[ $WEB_SERVER == nginx ]]; then
+  PHP_FPM_SOCK="/run/php/php$PHP_VER-fpm.sock"
+  systemctl enable --now "php$PHP_VER-fpm" >/dev/null 2>&1
+  systemctl enable nginx >/dev/null 2>&1
+else
+  # Garante que somente o mod_php da versão escolhida está ativo
+  for m in /etc/apache2/mods-enabled/php*.load; do
+    [[ -e $m ]] || continue
+    mod=$(basename "$m" .load)
+    [[ $mod == "php$PHP_VER" ]] || a2dismod -q "$mod" >/dev/null
+  done
+  a2dismod -q mpm_event >/dev/null 2>&1 || true
+  a2enmod -q mpm_prefork "php$PHP_VER" rewrite headers >/dev/null
+fi
 
 # Validação das extensões (lista do RequirementsManager do GLPI)
 PHP_MODS=$(php -m)
@@ -733,7 +755,7 @@ done
 log "PHP $(php -r 'echo PHP_VERSION;') com todas as extensões obrigatórias"
 
 # php.ini recomendado para o GLPI
-for sapi in apache2 cli; do
+for sapi in apache2 fpm cli; do
   d="/etc/php/$PHP_VER/$sapi/conf.d"
   [[ -d $d ]] || continue
   cat >"$d/99-glpi.ini" <<EOF
@@ -751,6 +773,112 @@ date.timezone = $GLPI_TZ
 EOF
 done
 log "php.ini ajustado (/etc/php/$PHP_VER/*/conf.d/99-glpi.ini)"
+[[ $WEB_SERVER == nginx ]] && systemctl restart "php$PHP_VER-fpm"
+return 0
+}
+
+# Configuração Nginx recomendada pela documentação do GLPI (root em /public,
+# tudo roteado para index.php, só o index.php vai para o PHP-FPM).
+# nginx_glpi_server <porta> <server_name> <diretório_glpi> [linhas extras: listen/ssl preservados]
+nginx_glpi_server() {
+  local port=$1 name=$2 dir=$3 extra=${4:-}
+  cat <<EOF
+# Gerado por install-glpi.sh em $(date '+%F %T')
+server {
+$(if [[ -n $extra ]]; then printf '%s\n' "$extra"; else printf '    listen %s;\n' "$port"; fi)
+    server_name $name;
+
+    root $dir/public;
+    index index.php;
+
+    client_max_body_size 64M;
+    server_tokens off;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+
+    location / {
+        try_files \$uri /index.php\$is_args\$args;
+    }
+
+    location ~ ^/index\.php\$ {
+        fastcgi_pass unix:$PHP_FPM_SOCK;
+        fastcgi_split_path_info ^(.+\.php)(/.*)\$;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_read_timeout 600;
+    }
+
+    access_log /var/log/nginx/glpi_access.log;
+    error_log  /var/log/nginx/glpi_error.log;
+}
+EOF
+}
+
+# Atualização com Nginx: garante a configuração do GLPI 11 (root em /public e roteamento
+# pelo index.php) e aponta o fastcgi_pass para o PHP-FPM atual. Faz backup e valida com nginx -t.
+# Chamado ANTES de qualquer alteração (modo "check") e depois da troca do código ("apply").
+fix_nginx_conf() { # fix_nginx_conf check|apply diretório_glpi carimbo
+  local mode=$1 dir=$2 ts=$3 conf real blocks name extra
+  NGINX_CONF=""
+  for conf in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do
+    [[ -f $conf ]] || continue
+    grep -qE "^[[:space:]]*root[[:space:]]+\"?$dir(/public)?/?\"?[[:space:]]*;" "$conf" && { NGINX_CONF=$(readlink -f "$conf"); break; }
+  done
+  [[ -n $NGINX_CONF ]] || { [[ $mode == check ]] && die "Nenhuma configuração do Nginx com 'root $dir' foi encontrada em /etc/nginx/sites-enabled ou conf.d."; return 0; }
+  NGINX_COMPATIBLE=0
+  if grep -qE "^[[:space:]]*root[[:space:]]+\"?$dir/public/?\"?[[:space:]]*;" "$NGINX_CONF" \
+     && grep -qE 'try_files[[:space:]]+\$uri[[:space:]]+/index\.php' "$NGINX_CONF"; then
+    NGINX_COMPATIBLE=1
+  fi
+  blocks=$(grep -cE '^[[:space:]]*server[[:space:]]*\{' "$NGINX_CONF" || true)
+
+  if [[ $mode == check ]]; then
+    if (( GLPI_MAJOR >= 11 && ! NGINX_COMPATIBLE && blocks != 1 )); then
+      warn "O arquivo $NGINX_CONF tem $blocks blocos 'server' e não pode ser ajustado automaticamente com segurança."
+      echo "  Ajuste o bloco do GLPI para ficar assim e rode o script de novo:"
+      nginx_glpi_server 80 "seu.servidor" "$dir" | sed 's/^/    /'
+      die "Atualização cancelada antes de qualquer alteração."
+    fi
+    return 0
+  fi
+
+  cp -a "$NGINX_CONF" "$NGINX_CONF.bak-$ts"
+  if (( GLPI_MAJOR >= 11 && ! NGINX_COMPATIBLE )); then
+    # Regenera o bloco preservando portas (listen), server_name e certificados SSL
+    name=$(grep -m1 -oP '^\s*server_name\s+\K[^;]+' "$NGINX_CONF" || echo "_")
+    extra=$(grep -E '^[[:space:]]*(listen|ssl_[a-z_]+|http2)[[:space:]]' "$NGINX_CONF" | sed -E 's/^[[:space:]]*/    /' || true)
+    nginx_glpi_server 80 "$name" "$dir" "$extra" >"$NGINX_CONF"
+    log "Nginx: bloco do GLPI regenerado para o GLPI 11 ($NGINX_CONF; backup em $NGINX_CONF.bak-$ts)"
+  else
+    # Já compatível: só aponta o fastcgi_pass para o PHP-FPM atual
+    sed -i -E "s#fastcgi_pass[[:space:]]+unix:[^;]*php[^;]*\.sock;#fastcgi_pass unix:$PHP_FPM_SOCK;#" "$NGINX_CONF"
+    grep -qE 'fastcgi_pass[[:space:]]+(127\.0\.0\.1|localhost):' "$NGINX_CONF" \
+      && warn "O fastcgi_pass usa TCP; confira se o PHP-FPM $PHP_VER escuta nesse endereço."
+    log "Nginx: configuração já compatível; PHP-FPM apontado para $PHP_FPM_SOCK"
+  fi
+  if ! nginx -t >/dev/null 2>&1; then
+    mv "$NGINX_CONF.bak-$ts" "$NGINX_CONF"
+    nginx -t || true
+    die "A configuração do Nginx ficou inválida e foi restaurada. Veja a mensagem acima."
+  fi
+  systemctl reload nginx
+}
+
+# Qual servidor web atende o GLPI instalado em <dir>: imprime apache, nginx ou nada
+detect_web_server() {
+  local dir=$1
+  if command -v nginx >/dev/null 2>&1 \
+     && grep -rqsE "^[[:space:]]*root[[:space:]]+\"?$dir(/public)?/?\"?[[:space:]]*;" /etc/nginx/sites-enabled /etc/nginx/conf.d; then
+    echo nginx; return 0
+  fi
+  if command -v apache2ctl >/dev/null 2>&1 \
+     && grep -rqsE "DocumentRoot[[:space:]]+\"?$dir(/public)?/?\"?[[:space:]]*$" /etc/apache2/sites-enabled; then
+    echo apache; return 0
+  fi
+  if systemctl is-active --quiet nginx 2>/dev/null; then echo nginx
+  elif systemctl is-active --quiet apache2 2>/dev/null; then echo apache
+  fi
+  return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -871,9 +999,10 @@ if [[ -n $EXISTING_DIR ]]; then
   [[ $INSTALL_MODE == C ]] && die "Cancelado pelo usuário."
 
   if [[ $INSTALL_MODE == A ]]; then
-    if ! command -v apache2 >/dev/null 2>&1 && ! command -v apache2ctl >/dev/null 2>&1; then
-      die "A atualização automática só suporta Apache. Este servidor parece usar outro servidor web; atualize manualmente."
-    fi
+    WEB_SERVER=$(detect_web_server "$EXISTING_DIR")
+    [[ -n $WEB_SERVER ]] || die "Não identifiquei se o GLPI é servido pelo Apache ou pelo Nginx. Atualize manualmente."
+    WEB_SVC=$([[ $WEB_SERVER == nginx ]] && echo nginx || echo apache2)
+    log "Servidor web em uso: $WEB_SERVER"
     title "4/9 Configuração da atualização"
     ask GLPI_TZ "Fuso horário (PHP/GLPI)" "America/Sao_Paulo"
     ask_yn INSTALL_GLPIINVENTORY "Instalar/atualizar o plugin GLPI Inventory (descoberta de rede, SNMP, implantação)?" S
@@ -894,9 +1023,18 @@ title "4/11 Configuração da instalação"
 DEFAULT_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
 echo "  -- Acesso web --"
+while true; do
+  ask WEB_SERVER "Servidor web: apache ou nginx" "apache"
+  case ${WEB_SERVER,,} in
+    a|apache|apache2) WEB_SERVER=apache; break ;;
+    n|nginx)          WEB_SERVER=nginx; break ;;
+  esac
+  warn "Responda apache ou nginx."; unset WEB_SERVER
+done
+WEB_SVC=$([[ $WEB_SERVER == nginx ]] && echo nginx || echo apache2)
 ask GLPI_FQDN "Nome DNS ou IP pelo qual o GLPI será acessado" "${DEFAULT_IP:-localhost}"
 while true; do
-  ask GLPI_PORT "Porta HTTP do Apache" "80"
+  ask GLPI_PORT "Porta HTTP" "80"
   [[ $GLPI_PORT =~ ^[0-9]+$ ]] && (( GLPI_PORT >= 1 && GLPI_PORT <= 65535 )) && break
   warn "Porta inválida."; unset GLPI_PORT
 done
@@ -1049,6 +1187,7 @@ echo
 echo "  ${C_W}Resumo:${C_N}"
 echo "    GLPI ............: $GLPI_VERSION  ->  $GLPI_DIR"
 echo "    URL .............: $GLPI_URL"
+echo "    Servidor web ....: $WEB_SERVER"
 echo "    Idioma / Fuso ...: $GLPI_LANG / $GLPI_TZ"
 echo "    Banco ...........: $DB_HOST:$DB_PORT  (local: $DB_LOCAL)"
 echo "    Base / Usuário ..: $DB_NAME / $DB_USER@$DB_USER_HOST"
@@ -1066,9 +1205,9 @@ ask_yn CONFIRM "Prosseguir com a instalação?" S
 # -----------------------------------------------------------------------------
 # 3. PHP + Apache
 # -----------------------------------------------------------------------------
-title "5/11 Instalando Apache e PHP"
+title "5/11 Instalando servidor web ($WEB_SERVER) e PHP"
 
-setup_php_apache
+setup_php_web
 
 # -----------------------------------------------------------------------------
 # 4. Banco de dados
@@ -1193,12 +1332,22 @@ log "Diretórios: config=$GLPI_CONFIG_DIR  dados=$GLPI_VAR_DIR  logs=$GLPI_LOG_D
 # -----------------------------------------------------------------------------
 # 6. Apache
 # -----------------------------------------------------------------------------
-title "8/11 Configurando o Apache"
+title "8/11 Configurando o servidor web ($WEB_SERVER)"
 
 LISTENERS=$(ss -ltnpH "sport = :$GLPI_PORT" 2>/dev/null || true)
-if [[ -n $LISTENERS && $LISTENERS != *apache2* ]]; then
+if [[ -n $LISTENERS && $LISTENERS != *"\"$WEB_SVC\""* ]]; then
   die "A porta $GLPI_PORT já está em uso por outro serviço: $LISTENERS"
 fi
+
+if [[ $WEB_SERVER == nginx ]]; then
+  nginx_glpi_server "$GLPI_PORT" "$GLPI_FQDN" "$GLPI_DIR" >/etc/nginx/sites-available/glpi.conf
+  ln -sf /etc/nginx/sites-available/glpi.conf /etc/nginx/sites-enabled/glpi.conf
+  [[ $GLPI_PORT == 80 ]] && rm -f /etc/nginx/sites-enabled/default
+  nginx -t >/dev/null 2>&1 || { nginx -t; die "Configuração do Nginx inválida."; }
+  systemctl enable nginx >/dev/null 2>&1
+  systemctl restart nginx
+  log "Nginx: site glpi ativo na porta $GLPI_PORT (root $GLPI_DIR/public, PHP-FPM $PHP_FPM_SOCK)"
+else
 
 if ! grep -qE "^[[:space:]]*Listen[[:space:]]+([^[:space:]]*:)?$GLPI_PORT([[:space:]]|$)" /etc/apache2/ports.conf; then
   echo "Listen $GLPI_PORT" >>/etc/apache2/ports.conf
@@ -1248,6 +1397,7 @@ apachectl configtest >/dev/null 2>&1 || { apachectl configtest; die "Configuraç
 systemctl enable apache2 >/dev/null 2>&1
 systemctl restart apache2
 log "VirtualHost glpi ativo na porta $GLPI_PORT (DocumentRoot $DOCROOT)"
+fi
 
 # -----------------------------------------------------------------------------
 # 7. Instalação do banco do GLPI
@@ -1398,6 +1548,7 @@ cat >"$INFO_FILE" <<EOF
 Data ..................: $(date '+%F %T')
 Versão ................: GLPI $GLPI_VERSION (PHP $(php -r 'echo PHP_VERSION;'))
 URL de acesso .........: $GLPI_URL
+Servidor web ..........: $WEB_SERVER
 Usuário super-admin ...: glpi
 Senha super-admin .....: $GLPI_ADMIN_PASS
 Usuários padrão .......: $( [[ $DISABLE_DEFAULT_USERS == S ]] && echo "tech/normal/post-only DESATIVADOS" || echo "tech/normal/post-only ativos (senhas padrão!)")

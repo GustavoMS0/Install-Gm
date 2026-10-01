@@ -20,6 +20,10 @@
 # Porta HTTP do Apache (80 é o padrão)
 #GLPI_PORT="80"
 
+# Servidor web: apache (Apache + mod_php) ou nginx (Nginx + PHP-FPM).
+# Na atualização de um GLPI existente, o servidor em uso é detectado automaticamente.
+#WEB_SERVER="apache"
+
 # Idioma padrão e fuso horário
 #GLPI_LANG="pt_BR"
 #GLPI_TZ="America/Sao_Paulo"
