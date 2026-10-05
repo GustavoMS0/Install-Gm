@@ -1,0 +1,146 @@
+# =============================================================================
+#  Configuração opcional do install-glpi.sh
+# -----------------------------------------------------------------------------
+#  Uso:
+#    cp glpi-install.conf.example glpi-install.conf
+#    nano glpi-install.conf          # ajuste os valores
+#    sudo bash install-glpi.sh glpi-install.conf
+#
+#  - Variável DEFINIDA (sem # na frente) não é perguntada na instalação.
+#  - Variável COMENTADA (com #) continua sendo perguntada normalmente.
+#  - Definida porém vazia ("") = usa o valor padrão (senhas: gera automaticamente).
+#  - ATENÇÃO: este arquivo pode conter senhas. Apague-o após a instalação
+#    e nunca faça commit dele (o .gitignore já ignora glpi-install.conf).
+# =============================================================================
+
+# ---------------------------- Acesso web -------------------------------------
+# Nome DNS ou IP pelo qual os usuários e os agentes acessarão o GLPI
+#GLPI_FQDN="glpi.suaempresa.local"
+
+# Porta HTTP do Apache (80 é o padrão)
+#GLPI_PORT="80"
+
+# Servidor web: apache (Apache + mod_php) ou nginx (Nginx + PHP-FPM).
+# Na atualização de um GLPI existente, o servidor em uso é detectado automaticamente.
+#WEB_SERVER="apache"
+
+# Idioma padrão e fuso horário
+#GLPI_LANG="pt_BR"
+#GLPI_TZ="America/Sao_Paulo"
+
+# Fixar uma versão específica do GLPI (vazio = última versão estável)
+#GLPI_VERSION="11.0.10"
+
+# ---------------------------- Banco de dados ---------------------------------
+# S = instala/usa MariaDB neste servidor | N = banco em outro servidor
+#DB_LOCAL="S"
+
+# Somente se DB_LOCAL="N"
+#DB_HOST="10.0.0.20"
+#DB_PORT="3306"
+# Host de origem permitido para o usuário do GLPI (IP deste servidor ou %)
+#DB_USER_HOST="10.0.0.10"
+
+# Usuário ADMINISTRADOR do banco, usado apenas para criar a base e o usuário.
+# Banco local com root: deixe a senha vazia para usar autenticação unix_socket.
+#DB_ADMIN_USER="root"
+#DB_ADMIN_PASS=""
+
+# Base e usuário que o GLPI vai usar
+#DB_NAME="glpi"
+#DB_USER="glpi"
+# Vazio = gera uma senha forte automaticamente (salva em /root/glpi-install-info.txt)
+#DB_PASS=""
+
+# ---------------------------- Primeiro acesso --------------------------------
+# Nova senha do super-admin "glpi" (vazio = gera automaticamente)
+#GLPI_ADMIN_PASS=""
+
+# Desativar os usuários padrão tech, normal e post-only (S/N)
+#DISABLE_DEFAULT_USERS="S"
+
+# ---------------------------- Estrutura da empresa ---------------------------
+# Nome da matriz / empresa. Vira a entidade principal (raiz) do GLPI.
+#GLPI_ROOT_ENTITY="Minha Empresa"
+
+# Filiais (subentidades da matriz), separadas por ";". Vazio = nenhuma filial.
+# Comentado = o script pergunta quantas são e o nome de cada uma.
+#GLPI_BRANCHES="Filial São Paulo;Filial Rio de Janeiro;Filial Curitiba"
+
+# ---------------------------- Categorias e plugins ---------------------------
+# Criar o catálogo padrão de categorias de atendimento (S/N)
+#CREATE_CATEGORIES="S"
+
+# Áreas do catálogo e dos grupos de atendimento, separadas por vírgula.
+# Opções: TI, RH, Financeiro, Marketing, Facilities
+#CATEGORY_AREAS="TI,RH,Financeiro,Marketing,Facilities"
+
+# Outros departamentos que também ATENDEM chamados, separados por vírgula.
+# Cada um ganha um grupo de atendimento e 3 categorias básicas
+# (Dúvidas e orientações, Solicitações, Problemas e reclamações). Vazio = nenhum.
+#EXTRA_AREAS="Jurídico,Compras,Qualidade"
+
+# Criar grupos de atendimento por área, perfis de acesso e regras (S/N).
+# Cada área vê só os seus chamados; só o Super-Admin vê todos. Veja PERFIS-E-PERMISSOES.md
+#CREATE_ACCESS="S"
+
+# Outras equipes/departamentos que só ABREM chamados (o gestor vê os chamados da equipe),
+# separadas por vírgula. Vazio = nenhuma. As áreas acima já viram grupos automaticamente.
+#TEAM_GROUPS="Comercial,Produção,Logística"
+
+# ---------------------------- Prioridades, SLA e OLA -------------------------
+# 4 níveis de prioridade (Baixa, Média, Alta, Muito alta) com a matriz ITIL (S/N)
+#SIMPLIFY_PRIORITIES="S"
+
+# Impacto e prioridade acompanham a urgência escolhida pelo usuário (S/N).
+# O SLA sempre segue a prioridade, inclusive quando o técnico a altera depois.
+#LINK_URGENCY_IMPACT="S"
+
+# Criar calendário, SLAs, OLAs e regras por prioridade. Veja PRIORIDADES-SLA-OLA.md (S/N)
+#CREATE_SLA="S"
+#BUSINESS_HOURS="08:00-18:00"       # horário de segunda a sexta
+#BUSINESS_SATURDAY="N"              # atende aos sábados? (S/N)
+#SATURDAY_HOURS="08:00-12:00"       # usado só se BUSINESS_SATURDAY="S"
+#ADD_HOLIDAYS="S"                   # feriados nacionais de data fixa no calendário
+
+# ---------------------------- Plugins ----------------------------------------
+# Instalar o plugin Cascater, que mostra as categorias em menus por nível (S/N)
+#INSTALL_CASCATER="S"
+
+# Instalar o plugin oficial GLPI Inventory (descoberta de rede, SNMP, implantação) (S/N)
+#INSTALL_GLPIINVENTORY="S"
+
+# Instalar o plugin Asset Terms: termos de entrega e devolução em PDF, com assinatura na tela (S/N)
+# https://github.com/GustavoMS0/GLPI-AssetTerms
+#INSTALL_ASSETTERMS="S"
+
+# Instalar o plugin GLPI Chatbot: assistente guiado para abertura de chamados no GLPI 11 (S/N)
+# https://github.com/GustavoMS0/GLPI-Chatbot
+#INSTALL_CHATBOT="S"
+
+# ---------------------------- GLPI já instalado ------------------------------
+# O que fazer se encontrar um GLPI instalado: A = atualizar mantendo os dados,
+# R = reinstalar do zero (APAGA tudo; exige REINSTALL_CONFIRM="APAGAR"), C = cancelar
+#INSTALL_MODE="A"
+
+# Caminho do GLPI existente, se não estiver em /var/www/glpi, /var/www/html/glpi ou /usr/share/glpi
+#GLPI_EXISTING_DIR="/var/www/glpi"
+
+# Onde salvar o backup feito antes da atualização (padrão: /root)
+#GLPI_BACKUP_DIR="/root"
+
+# Depois de atualizar, aplicar também na base existente (S/N):
+#   modelos de acompanhamento e de solução
+#UPDATE_APPLY_TEMPLATES="S"
+#   status de ciclo de vida, tipos de computador e limpeza dos KBs do Windows já importados
+#   (softwares com licença cadastrada são mantidos)
+#UPDATE_APPLY_INVENTORY="S"
+#   4 prioridades ITIL, SLAs e OLAs (usa BUSINESS_HOURS etc. da seção de SLA, se definidos)
+#UPDATE_APPLY_ITIL="N"
+
+# ---------------------------- Automação --------------------------------------
+# S = apaga e reinstala se a base já existir (CUIDADO!)
+#OVERWRITE="N"
+
+# S = não pede a confirmação final (instalação 100% automática)
+#CONFIRM="S"

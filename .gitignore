@@ -1,0 +1,27 @@
+# Configuração local com senhas
+servidor/glpi-install.conf
+*.conf
+!*.conf.example
+
+# Artefatos gerados pelo Build-IntunePackage.ps1
+intune/source/
+intune/output/
+intune/IntuneWinAppUtil.exe
+*.msi
+*.intunewin
+
+# Logs e informações de instalação
+*.log
+glpi-install-info.txt
+
+# Sistema / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Contexto interno (nunca commitar)
+CONTEXTO-PROJETO.md
+CONTEXTO-PROJETO.MD
+
+
