@@ -987,7 +987,9 @@ EOF
   if [[ $INSTALL_ASSETTERMS == S ]]; then
     termo_ver=$(fetch_assetterms) || { termo_ver=""; warn "Não foi possível baixar o Asset Terms."; }
   fi
-  if [[ $INSTALL_CHATBOT == S ]]; then
+  if [[ $INSTALL_CHATBOT == S ]] && (( GLPI_MAJOR < 11 )); then
+    warn "O GLPI Chatbot é só para o GLPI 11; não foi instalado no GLPI $GLPI_VERSION."
+  elif [[ $INSTALL_CHATBOT == S ]]; then
     chat_ver=$(fetch_chatbot) || { chat_ver=""; warn "Não foi possível baixar o GLPI Chatbot."; }
   fi
   console_cmds=$(glpi_console list --raw 2>/dev/null || true)
@@ -2077,7 +2079,10 @@ if [[ $INSTALL_ASSETTERMS == S ]]; then
 fi
 
 CHATBOT_STATUS="não instalado"
-if [[ $INSTALL_CHATBOT == S ]]; then
+if [[ $INSTALL_CHATBOT == S ]] && (( GLPI_MAJOR < 11 )); then
+  CHATBOT_STATUS="não instalado (o GLPI Chatbot é só para o GLPI 11)"
+  warn "O GLPI Chatbot é só para o GLPI 11; não foi instalado no GLPI $GLPI_VERSION."
+elif [[ $INSTALL_CHATBOT == S ]]; then
   if CHATBOT_VERSION=$(fetch_chatbot) && plugin_enable glpichatbot; then
     CHATBOT_STATUS="instalado e ativo (v$CHATBOT_VERSION)"
     log "Plugin GLPI Chatbot $CHATBOT_VERSION instalado e ativado"
