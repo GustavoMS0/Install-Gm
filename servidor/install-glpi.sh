@@ -1413,10 +1413,14 @@ fi
 mkdir -p "$(dirname "$LOG_FILE")"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "${C_W}"
-echo "  ============================================================"
-echo "     Instalador automatizado do GLPI  -  v$SCRIPT_VERSION"
-echo "  ============================================================${C_N}"
+echo -e "${C_B}┌──────────────────────────────────────────────────────────────┐${C_N}"
+echo -e "${C_B}│        GLPI ENTERPRISE AUTOMATED INSTALLER & CONFIG          │${C_N}"
+echo -e "${C_B}│   Instalação Limpa, Layout Seguro, ITIL & Módulos Nativos    │${C_N}"
+echo -e "${C_B}├──────────────────────────────────────────────────────────────┤${C_N}"
+echo -e "${C_B}│  Autor:    ${C_W}Gustavo Martins (@GustavoMS0)${C_B}                    │${C_N}"
+echo -e "${C_B}│  Versão:   ${C_W}v${SCRIPT_VERSION}${C_B}                                         │${C_N}"
+echo -e "${C_B}│  Projeto:  ${C_W}https://github.com/GustavoMS0/Install-Gm${C_B}          │${C_N}"
+echo -e "${C_B}└──────────────────────────────────────────────────────────────┘${C_N}"
 echo "  Log: $LOG_FILE"
 
 title "1/11 Verificando pré-requisitos do sistema"
