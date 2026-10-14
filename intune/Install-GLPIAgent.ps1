@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Instala/atualiza o GLPI Agent e cria a tarefa agendada de inventario (Intune Win32 App).
 
@@ -16,19 +16,19 @@
       powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-GLPIAgent.ps1
 
     Parametros podem ser passados no comando, ex.:
-      ... -File .\Install-GLPIAgent.ps1 -ServerUrl "http://glpi.empresa.local/front/inventory.php" -Tag "Matriz"
+      ... -File .\Install-GLPIAgent.ps1 -ServerUrl "https://glpi.empresa.local/front/inventory.php" -Tag "Matriz"
 
 .NOTES
     Codigos de saida: 0 = sucesso, 3010 = sucesso com reinicio pendente, 1 = falha.
 #>
 [CmdletBinding()]
 param(
-    [string]$ServerUrl       = 'http://SEU-SERVIDOR-GLPI/front/inventory.php',
+    [string]$ServerUrl       = 'https://SEU-SERVIDOR-GLPI/front/inventory.php',
     [string]$HttpdTrust      = '',   # vazio = IP/host extraido da ServerUrl
     [int]   $IntervalMinutes = 30,
     [string]$Tag             = '',   # TAG opcional do inventario (ex.: filial)
     [string]$TaskName        = 'GLPI_Inventario_Forcado',
-    [switch]$NoSslCheck              # Desativa checagem estrita de SSL (util para certificados autoassinados/CA interna)
+    [switch]$NoSslCheck              # Desativa a validacao do certificado (evite: prefira distribuir a CA do servidor via Intune)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,12 +41,73 @@ $RunnerPath    = Join-Path $WorkDir 'Invoke-GLPIInventory.ps1'
 if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
     $ps64 = Join-Path $env:WINDIR 'sysnative\WindowsPowerShell\v1.0\powershell.exe'
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-    foreach ($kv in $PSBoundParameters.GetEnumerator()) { $argList += "-$($kv.Key)"; $argList += "`"$($kv.Value)`"" }
+    foreach ($kv in $PSBoundParameters.GetEnumerator()) {
+        if ($kv.Value -is [System.Management.Automation.SwitchParameter]) {
+            # Switch: so o nome, e apenas quando ligado (-NoSslCheck "True" quebraria o -File)
+            if ($kv.Value.IsPresent) { $argList += "-$($kv.Key)" }
+        }
+        else {
+            $argList += "-$($kv.Key)"; $argList += "`"$($kv.Value)`""
+        }
+    }
     $p = Start-Process -FilePath $ps64 -ArgumentList $argList -Wait -PassThru -NoNewWindow
     exit $p.ExitCode
 }
 
-New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
+# Pasta de trabalho com ACL protegida: o script dela roda como SYSTEM pela tarefa agendada,
+# entao usuarios comuns nao podem criar nem alterar nada aqui (evita elevacao de privilegio).
+# Heranca desligada; apenas SYSTEM e Administradores com controle total; dono = Administradores.
+$SidSystem = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
+$SidAdmins = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+
+function New-ProtectedDirectorySecurity {
+    $acl = New-Object System.Security.AccessControl.DirectorySecurity
+    $acl.SetOwner($SidAdmins)
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @($SidSystem, $SidAdmins)) {
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl',
+            'ContainerInherit, ObjectInherit', 'None', 'Allow')))
+    }
+    return $acl
+}
+
+function Initialize-ProtectedDirectory([string]$Path) {
+    # Pasta preexistente so e reaproveitada se ja estiver protegida por este script (dono
+    # SYSTEM/Administradores e heranca desligada). Senao (criada por usuario, versao antiga do
+    # script, link/junction...) e apagada sem seguir links e recriada.
+    if (Test-Path -LiteralPath $Path) {
+        $item = Get-Item -LiteralPath $Path -Force
+        $trusted = $false
+        if ($item.PSIsContainer -and -not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            $cur = Get-Acl -LiteralPath $Path
+            $owner = $cur.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+            $trusted = $cur.AreAccessRulesProtected -and ($owner -in @($SidSystem.Value, $SidAdmins.Value))
+        }
+        if (-not $trusted) {
+            if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                [System.IO.Directory]::Delete($Path, $false)          # remove so o link
+            }
+            elseif ($item.PSIsContainer) {
+                & cmd.exe /d /c "rmdir /s /q `"$Path`"" | Out-Null   # rmdir nao segue junctions
+            }
+            else {
+                Remove-Item -LiteralPath $Path -Force
+            }
+            if (Test-Path -LiteralPath $Path) { throw "Nao foi possivel recriar com seguranca a pasta $Path" }
+        }
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        Set-Acl -LiteralPath $Path -AclObject (New-ProtectedDirectorySecurity)
+        # Algo criado na janela entre a criacao e a ACL nao e confiavel
+        if (Get-ChildItem -LiteralPath $Path -Force) { throw "Conteudo inesperado em $Path recem-criada; abortando." }
+    }
+    else {
+        Set-Acl -LiteralPath $Path -AclObject (New-ProtectedDirectorySecurity)
+    }
+}
+
+Initialize-ProtectedDirectory -Path $WorkDir
 $LogFile = Join-Path $WorkDir 'install.log'
 if ((Test-Path $LogFile) -and (Get-Item $LogFile).Length -gt 2MB) { Move-Item $LogFile "$LogFile.old" -Force }
 
@@ -94,9 +155,11 @@ try {
     }
     $uri = $null
     if (-not [uri]::TryCreate($ServerUrl, [UriKind]::Absolute, [ref]$uri) -or $uri.Scheme -notin 'http', 'https') {
-        throw "ServerUrl invalida: '$ServerUrl' (ex.: http://glpi.suaempresa.local/front/inventory.php)"
+        throw "ServerUrl invalida: '$ServerUrl' (ex.: https://glpi.suaempresa.local/front/inventory.php)"
     }
     if (-not $HttpdTrust) { $HttpdTrust = $uri.Host }
+    if ($uri.Scheme -ne 'https') { Write-Log 'ServerUrl em HTTP: inventario sem criptografia. Recomenda-se HTTPS.' 'WARN' }
+    if ($NoSslCheck) { Write-Log 'NoSslCheck ativo: o certificado do servidor NAO e validado. Prefira distribuir a CA via Intune.' 'WARN' }
 
     # ---------------------------------------------------------------- MSI
     $msi = Get-ChildItem -Path $PSScriptRoot -Filter 'GLPI-Agent-*-x64.msi' -File |
@@ -156,7 +219,7 @@ try {
             Set-ItemProperty -Path $agentReg -Name 'httpd-trust' -Value $HttpdTrust
             Set-ItemProperty -Path $agentReg -Name 'scan-homedirs' -Value '0'
             if ($Tag) { Set-ItemProperty -Path $agentReg -Name 'tag' -Value $Tag }
-            if ($NoSslCheck) { Set-ItemProperty -Path $agentReg -Name 'no-ssl-check' -Value '1' }
+            Set-ItemProperty -Path $agentReg -Name 'no-ssl-check' -Value $(if ($NoSslCheck) { '1' } else { '0' })
             if ($changed) {
                 Restart-Service -Name 'glpi-agent' -Force -ErrorAction SilentlyContinue
             }
@@ -236,6 +299,8 @@ exit $rc
 '@
     $runner = $runner.Replace('__SERVER_URL__', $ServerUrl.Replace("'", "''"))
     $runner = $runner.Replace('__NO_SSL_CHECK__', $(if ($NoSslCheck) { '1' } else { '0' }))
+    # Arquivo preexistente (pode ter sido plantado antes da ACL) e removido e recriado
+    if (Test-Path -LiteralPath $RunnerPath) { Remove-Item -LiteralPath $RunnerPath -Force }
     Set-Content -Path $RunnerPath -Value $runner -Encoding UTF8 -Force
     Write-Log "Script da tarefa criado: $RunnerPath"
 

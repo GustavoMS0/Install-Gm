@@ -18,24 +18,20 @@ Este guia mostra como **baixar e executar os scripts direto deste repositório**
 
 > **Pré-requisito:** o `curl` precisa estar instalado. Se não estiver: `sudo apt update && sudo apt install -y curl`
 
+> **Sempre de uma release com tag, nunca da branch `main`.** Os comandos abaixo usam a release `v1.1.0` (variável `VER`). Troque pela release mais recente listada em [Releases](https://github.com/GustavoMS0/Install-Gm/releases). A `main` pode conter código ainda não testado.
+
 ### Modo A: interativo (o script pergunta tudo)
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servidor/install-glpi.sh
+VER=v1.1.0
+curl -fsSLO "https://raw.githubusercontent.com/GustavoMS0/Install-Gm/$VER/servidor/install-glpi.sh"
+less install-glpi.sh            # confira o script ANTES de rodar como root
 sudo bash install-glpi.sh
 ```
 
 Responda às perguntas (Enter aceita o padrão) e confirme. Veja o que cada pergunta significa no [README](README.md#passo-2-executar).
 
-<details>
-<summary>Prefere executar sem salvar o arquivo?</summary>
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servidor/install-glpi.sh | sudo bash
-```
-
-As perguntas continuam funcionando normalmente. Ainda assim, **baixar primeiro é mais seguro**: você pode ler o script antes de rodar como root (`less install-glpi.sh`).
-</details>
+> Não use `curl ... | sudo bash`: o script rodaria como root sem que você possa lê-lo, e uma conexão interrompida pode executar um arquivo pela metade. Baixe, confira e só então execute.
 
 ### Modo B: 100% automático com arquivo de configuração
 
@@ -44,17 +40,22 @@ Ideal para quando você já sabe todos os valores e quer que a instalação rode
 **1. Baixe o script e o modelo de configuração:**
 
 ```bash
-BASE=https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servidor
+VER=v1.1.0
+BASE="https://raw.githubusercontent.com/GustavoMS0/Install-Gm/$VER/servidor"
 curl -fsSLO "$BASE/install-glpi.sh"
 curl -fsSL  "$BASE/glpi-install.conf.example" -o glpi-install.conf
 chmod 600 glpi-install.conf
 ```
 
+> O arquivo de configuração é executado como root. Antes de rodar, ele precisa **pertencer ao root** e não ser gravável por grupo/outros (o passo 3 faz isso); caso contrário o script recusa.
+
 **2. Edite a configuração** (`nano glpi-install.conf`), tirando o `#` das linhas que quiser preencher. Um exemplo completo para **banco local**, que não faz nenhuma pergunta:
 
 ```bash
 GLPI_FQDN="glpi.suaempresa.local"   # ou o IP do servidor
-GLPI_PORT="80"
+GLPI_PORT="80"                       # com HTTPS, só redireciona para a porta HTTPS
+GLPI_TLS="self-signed"               # HTTPS: self-signed, custom (GLPI_TLS_CERT/KEY) ou none
+GLPI_HTTPS_PORT="443"
 WEB_SERVER="apache"                  # ou "nginx" (Nginx + PHP-FPM)
 GLPI_LANG="pt_BR"
 GLPI_TZ="America/Sao_Paulo"
@@ -90,12 +91,16 @@ CONFIRM="S"                          # não pede confirmação final
 ```bash
 GLPI_FQDN="glpi.suaempresa.local"
 GLPI_PORT="80"
+GLPI_TLS="self-signed"
+GLPI_HTTPS_PORT="443"
 WEB_SERVER="nginx"
 
 DB_LOCAL="N"
 DB_HOST="10.0.0.20"
 DB_PORT="3306"
-DB_USER_HOST="10.0.0.10"             # IP deste servidor GLPI (ou %)
+DB_SSL="1"                           # conexão TLS com o banco
+DB_SSL_CA="/etc/ssl/certs/ca-banco.pem"   # "" = criptografa sem validar o certificado
+DB_USER_HOST="10.0.0.10"             # IP deste servidor GLPI (evite %: libera qualquer origem)
 DB_ADMIN_USER="admin"
 DB_ADMIN_PASS="SenhaDoAdminDoBanco"
 DB_NAME="glpi"
@@ -132,9 +137,11 @@ CONFIRM="S"
 **3. Execute e apague o arquivo de configuração:**
 
 ```bash
+sudo chown root:root glpi-install.conf && sudo chmod 600 glpi-install.conf
 sudo bash install-glpi.sh glpi-install.conf
-rm -f glpi-install.conf
+sudo shred -u glpi-install.conf
 sudo cat /root/glpi-install-info.txt      # senhas geradas e URL do agente
+sudo shred -u /root/glpi-install-info.txt # depois de guardar as senhas num cofre
 ```
 
 ### Modo C: 100% automático em uma linha
@@ -142,8 +149,9 @@ sudo cat /root/glpi-install-info.txt      # senhas geradas e URL do agente
 Os mesmos valores do modo B podem ser passados direto no comando, sem arquivo:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servidor/install-glpi.sh \
-&& sudo GLPI_FQDN="glpi.suaempresa.local" GLPI_PORT="80" \
+VER=v1.1.0
+curl -fsSLO "https://raw.githubusercontent.com/GustavoMS0/Install-Gm/$VER/servidor/install-glpi.sh" \
+&& sudo GLPI_FQDN="glpi.suaempresa.local" GLPI_PORT="80" GLPI_TLS="self-signed" GLPI_HTTPS_PORT="443" \
         DB_LOCAL="S" DB_ADMIN_USER="root" DB_ADMIN_PASS="" \
         DB_NAME="glpi" DB_USER="glpi" DB_PASS="" \
         GLPI_ADMIN_PASS="" DISABLE_DEFAULT_USERS="S" \
@@ -158,11 +166,11 @@ curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servido
 
 ### Modo D: clonar o repositório inteiro
 
-Útil se você quer adaptar os scripts ou manter uma cópia atualizada com `git pull`.
+Útil se você quer adaptar os scripts. Para mudar de versão depois: `git fetch --tags && git checkout <nova-tag>`.
 
 ```bash
 sudo apt install -y git
-git clone https://github.com/GustavoMS0/Install-Gm.git
+git clone --branch v1.1.0 --depth 1 https://github.com/GustavoMS0/Install-Gm.git
 cd Install-Gm/servidor
 sudo bash install-glpi.sh                       # interativo
 # ou: sudo bash install-glpi.sh glpi-install.conf   (automático)
@@ -174,48 +182,54 @@ sudo bash install-glpi.sh                       # interativo
 
 ### Opção 1: só com PowerShell (sem instalar nada)
 
-Cole no PowerShell, trocando a URL do servidor na última linha:
+Cole no PowerShell, trocando a URL do servidor na última linha (use **https**):
 
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ver  = 'v1.1.0'
 $dest = "$env:USERPROFILE\Install-Gm"
 $zip  = "$env:TEMP\instalador.zip"; $tmp = "$env:TEMP\instalador"
 Remove-Item $dest, $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Invoke-WebRequest -UseBasicParsing -OutFile $zip `
-  -Uri 'https://github.com/GustavoMS0/Install-Gm/archive/refs/heads/main.zip'
+  -Uri "https://github.com/GustavoMS0/Install-Gm/archive/refs/tags/$ver.zip"
 Expand-Archive $zip $tmp -Force
 Get-ChildItem $tmp -Directory | Select-Object -First 1 | Move-Item -Destination $dest
 Remove-Item $zip, $tmp -Recurse -Force
 
 cd "$dest\intune"
-powershell -ExecutionPolicy Bypass -File .\Build-IntunePackage.ps1 -ServerUrl 'http://glpi.suaempresa.local/front/inventory.php'
+powershell -ExecutionPolicy Bypass -File .\Build-IntunePackage.ps1 -ServerUrl 'https://glpi.suaempresa.local/front/inventory.php'
 ```
 
-> Também dá para baixar pelo navegador: botão verde **Code › Download ZIP** na página do repositório. Depois é só extrair e rodar a última linha acima dentro da pasta `intune`.
+> Também dá para baixar pelo navegador: em **Releases**, baixe o *Source code (zip)* da release. Depois é só extrair e rodar a última linha acima dentro da pasta `intune`.
 
 ### Opção 2: com git
 
 ```powershell
 cd $env:USERPROFILE
-git clone https://github.com/GustavoMS0/Install-Gm.git
+git clone --branch v1.1.0 --depth 1 https://github.com/GustavoMS0/Install-Gm.git
 cd .\Install-Gm\intune
-powershell -ExecutionPolicy Bypass -File .\Build-IntunePackage.ps1 -ServerUrl 'http://glpi.suaempresa.local/front/inventory.php'
+powershell -ExecutionPolicy Bypass -File .\Build-IntunePackage.ps1 -ServerUrl 'https://glpi.suaempresa.local/front/inventory.php'
 ```
 
-Para atualizar depois: `cd $env:USERPROFILE\Install-Gm; git pull`
+Para mudar de versão depois: `cd $env:USERPROFILE\Install-Gm; git fetch --tags; git checkout <nova-tag>`
 
 O pacote fica em `intune\output\`. Siga para [Criar o app no Intune](README.md#passo-2-criar-o-app-no-intune).
+
+> **HTTPS e `-NoSslCheck`:** use `https://` na `-ServerUrl`. Com certificado autoassinado, distribua o certificado do servidor (`/etc/ssl/glpi/glpi.crt`) às máquinas por um perfil de **certificado confiável** do Intune. `-NoSslCheck` desliga a validação do certificado no agente (qualquer um na rede pode se passar pelo servidor): use só como último recurso.
 
 ---
 
 ## Usar uma versão fixa do instalador
 
-Os comandos acima baixam a versão mais recente do instalador, na branch `main`. Para instalar sempre com uma versão testada, troque `main` pela **tag** ou pelo **hash do commit**:
+Todos os comandos acima já usam uma **tag de release** (`VER=v1.1.0`). Para outra versão, troque o valor de `VER` pela tag desejada (lista em [Releases](https://github.com/GustavoMS0/Install-Gm/releases)) ou pelo **hash do commit**:
 
 ```bash
-# Exemplo com uma tag de release (ex.: v1.0.0)
-curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/v1.0.0/servidor/install-glpi.sh
+VER=v1.1.0     # ou o hash completo de um commit
+curl -fsSLO "https://raw.githubusercontent.com/GustavoMS0/Install-Gm/$VER/servidor/install-glpi.sh"
+less install-glpi.sh
 ```
+
+Evite a branch `main`: ela recebe mudanças antes de serem publicadas como release.
 
 > Isso fixa a versão **do instalador**. A versão **do GLPI** é escolhida à parte, com `GLPI_VERSION="11.0.10"` no arquivo de configuração. Sem essa variável, o instalador usa a última versão estável do GLPI.
 
@@ -231,3 +245,5 @@ curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/v1.0.0/servi
 | `Arquivo de configuração '...' não encontrado` | Rode o comando na mesma pasta do `glpi-install.conf`, ou informe o caminho completo |
 | `/bin/bash^M: bad interpreter` | O arquivo foi editado no Windows. Rode `sed -i 's/\r$//' install-glpi.sh glpi-install.conf` |
 | `DB_ADMIN_PASS não pode ser vazia.` | Com banco **remoto**, a senha do admin é obrigatória no arquivo de configuração |
+| `... precisa pertencer ao root` / `não pode ser gravável por grupo/outros` | `sudo chown root:root glpi-install.conf && sudo chmod 600 glpi-install.conf` |
+| `SHA-256 NÃO confere` | O pacote baixado difere do publicado na release (download corrompido ou adulterado). Nada foi instalado com ele; tente de novo e, se persistir, não prossiga |

@@ -42,13 +42,15 @@
 #             INSTALL_GLPIINVENTORY INSTALL_MODE GLPI_EXISTING_DIR GLPI_BACKUP_DIR
 #             SIMPLIFY_PRIORITIES LINK_URGENCY_IMPACT CREATE_SLA BUSINESS_HOURS
 #             BUSINESS_SATURDAY SATURDAY_HOURS ADD_HOLIDAYS INSTALL_ASSETTERMS
-#             ASSETTERMS_REPO INSTALL_CHATBOT CHATBOT_REPO
+#             ASSETTERMS_REPO INSTALL_CHATBOT CHATBOT_REPO CHATBOT_SRC
+#             CASCATER_TAG ASSETTERMS_TAG CHATBOT_TAG GLPI_SHA256
+#             GLPI_TLS GLPI_HTTPS_PORT GLPI_TLS_CERT GLPI_TLS_KEY DB_SSL DB_SSL_CA
 #             UPDATE_APPLY_TEMPLATES UPDATE_APPLY_INVENTORY UPDATE_APPLY_ITIL
 #             OVERWRITE CONFIRM
 # =============================================================================
 set -Eeuo pipefail
 
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.1.0"
 readonly LOG_FILE="/var/log/glpi-install-$(date +%Y%m%d-%H%M%S).log"
 readonly INFO_FILE="/root/glpi-install-info.txt"
 GLPI_DIR="/var/www/glpi"          # não é readonly: no modo atualização aponta para o GLPI encontrado
@@ -74,7 +76,16 @@ die()   { echo "${C_R}[ERRO]${C_N} $*" >&2; exit 1; }
 title() { echo; echo "${C_W}==== $* ====${C_N}"; }
 
 TMP_FILES=()
-cleanup() { local f; for f in "${TMP_FILES[@]}"; do rm -rf -- "$f"; done; }
+TEE_PID=""
+cleanup() {
+  local f
+  for f in "${TMP_FILES[@]}"; do rm -rf -- "$f"; done
+  # Fecha o pipe do tee (restaurando a saída original) e espera ele gravar as últimas linhas do log
+  if [[ -n $TEE_PID ]]; then
+    exec 1>&3 2>&4 3>&- 4>&-
+    wait "$TEE_PID" 2>/dev/null || true
+  fi
+}
 trap cleanup EXIT
 trap 'die "Falha na linha $LINENO: $BASH_COMMAND (log: $LOG_FILE)"' ERR
 
@@ -154,6 +165,18 @@ make_mycnf() { # make_mycnf arquivo host porta usuario senha
     echo "user=$4"
     [[ -n $5 ]] && echo "password=\"$(cnf_escape "$5")\""
     echo "default-character-set=utf8mb4"
+    # TLS opcional com o banco (DB_SSL=1). O cliente MariaDB e o MySQL usam opções diferentes.
+    if [[ ${DB_SSL:-0} == 1 ]]; then
+      [[ -n ${DB_SSL_CA:-} ]] && echo "ssl-ca=\"$(cnf_escape "$DB_SSL_CA")\""
+      if mysql --version 2>/dev/null | grep -qi mariadb; then
+        echo "ssl"
+        [[ -n ${DB_SSL_CA:-} ]] && echo "ssl-verify-server-cert"
+      elif [[ -n ${DB_SSL_CA:-} ]]; then
+        echo "ssl-mode=VERIFY_CA"
+      else
+        echo "ssl-mode=REQUIRED"
+      fi
+    fi
   } >>"$f"
 }
 
@@ -306,9 +329,9 @@ create_categories() {
   echo "$count"
 }
 
-# Baixa (Release mais recente ou branch principal) e instala o plugin Cascater
+# Diretório temporário de trabalho (downloads), removido no fim do script
 WORK_TMP=""
-work_tmp() { # diretório temporário removido no fim do script
+work_tmp() {
   [[ -n $WORK_TMP ]] || { WORK_TMP=$(mktemp -d); TMP_FILES+=("$WORK_TMP"); }
   mktemp -d -p "$WORK_TMP"
 }
@@ -322,29 +345,98 @@ copy_plugin() { # copy_plugin origem chave  -> plugins/<chave>, código pertence
 
 readonly GH_UA="User-Agent: Install-GLPI/1.0"
 
-# Baixa o Cascater (Release mais recente ou branch principal). Imprime a versão.
-fetch_cascater() {
-  local repo=${CASCATER_REPO:-GustavoMS0/Cascater} tmp url downloaded=0
+# Plugins próprios: só releases com tag (nunca a branch main), fixadas por padrão nestas
+# versões e conferidas pelo SHA-256 abaixo. Para outra versão: CASCATER_TAG, ASSETTERMS_TAG,
+# CHATBOT_TAG (conferidas pelo digest que o GitHub publica para o asset da release).
+readonly CASCATER_REPO_DEFAULT="GustavoMS0/Cascater" CASCATER_TAG_DEFAULT="v3.0.0" \
+         CASCATER_SHA256_DEFAULT="6b0622139064a939919c8334ddea5045b2c0eb33c220797cd814113cc6b54019"
+readonly ASSETTERMS_REPO_DEFAULT="GustavoMS0/GLPI-AssetTerms" ASSETTERMS_TAG_DEFAULT="v1.5.0" \
+         ASSETTERMS_SHA256_DEFAULT="0ed33f63aebfb022370ee86002820bdf22d9f5acd321fa30cdf0008df4b790c7"
+readonly CHATBOT_REPO_DEFAULT="GustavoMS0/GLPI-Chatbot" CHATBOT_TAG_DEFAULT="v1.1.0" \
+         CHATBOT_SHA256_DEFAULT="a2c1061917a32bc7c99f7647e69fef15ec87db40093ee52b0c9683042dff4089"
+
+# JSON de uma release do GitHub ("latest" ou tag); vazio se não encontrar
+gh_release_json() { # gh_release_json dono/repo tag|latest
+  local path="tags/$2"
+  [[ $2 == latest ]] && path=latest
+  curl -fsSL -H "$GH_UA" -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/$1/releases/$path" 2>/dev/null || true
+}
+
+# "sha256:abc..." (campo digest da API do GitHub) -> "abc..."; vazio se for outro formato
+digest_sha256() {
+  local d=${1,,}
+  [[ $d =~ ^sha256:([0-9a-f]{64})$ ]] && printf '%s' "${BASH_REMATCH[1]}"
+  return 0
+}
+
+# Confere o SHA-256 de um arquivo. Sem hash esperado: avisa e aceita. Hash diferente: apaga e falha.
+verify_sha256() { # verify_sha256 arquivo sha256_esperado rótulo
+  local want=${2,,} got
+  if [[ -z $want ]]; then
+    warn "$3: o GitHub não publicou o SHA-256 deste arquivo; integridade NÃO verificada." >&2
+    return 0
+  fi
+  got=$(sha256sum "$1" | awk '{print $1}')
+  if [[ $got != "$want" ]]; then
+    warn "$3: SHA-256 NÃO confere (esperado $want, obtido $got). Arquivo descartado." >&2
+    rm -f -- "$1"
+    return 1
+  fi
+  log "$3: SHA-256 conferido" >&2
+}
+
+# Baixa o asset (nome casando com a regex) da release <tag> de <repo> e confere o SHA-256
+# publicado pelo GitHub. Com hash fixado, ele também precisa conferir.
+fetch_release_asset() { # fetch_release_asset repo tag regex destino [sha256_fixado]
+  local repo=$1 tag=$2 re=$3 dest=$4 pinned=${5:-} json name url digest
+  json=$(gh_release_json "$repo" "$tag")
+  [[ -n $json ]] || { warn "Release '$tag' de $repo não encontrada no GitHub." >&2; return 1; }
+  name=$(jq -r --arg re "$re" '[.assets[]? | select(.name | test($re))][0].name // empty' <<<"$json" 2>/dev/null || true)
+  [[ -n $name ]] || { warn "A release '$tag' de $repo não tem o pacote esperado ($re)." >&2; return 1; }
+  url=$(jq -r --arg n "$name" '[.assets[] | select(.name == $n)][0].browser_download_url // empty' <<<"$json")
+  digest=$(digest_sha256 "$(jq -r --arg n "$name" '[.assets[] | select(.name == $n)][0].digest // empty' <<<"$json")")
+  if [[ -n $pinned && -n $digest && $pinned != "$digest" ]]; then
+    warn "$repo $tag: o SHA-256 publicado no GitHub difere do fixado no script. Download recusado." >&2
+    return 1
+  fi
+  curl -fsSL --retry 3 -H "$GH_UA" -o "$dest" "$url" || { warn "Falha no download de $url" >&2; return 1; }
+  verify_sha256 "$dest" "${pinned:-$digest}" "$name"
+}
+
+# Aviso em destaque quando a origem de um plugin foi trocada por variável de ambiente
+warn_plugin_source() { # warn_plugin_source plugin origem
+  warn "################################################################" >&2
+  warn "ATENÇÃO: o plugin $1 virá de uma origem NÃO padrão: $2" >&2
+  warn "O código será instalado no GLPI e executado pelo servidor web. Use só origens confiáveis." >&2
+  warn "################################################################" >&2
+}
+
+# Baixa (release com tag, SHA-256 conferido) e copia um plugin próprio. Imprime a versão.
+# fetch_own_plugin rótulo repo repo_padrão tag tag_padrão sha256_padrão regex_zip pasta constante
+fetch_own_plugin() {
+  local label=$1 repo=$2 repo_def=$3 tag=$4 tag_def=$5 sha_def=$6 re=$7 dir=$8 const=$9 tmp pin=""
+  [[ $repo == "$repo_def" ]] || warn_plugin_source "$label" "github.com/$repo"
+  [[ $repo == "$repo_def" && $tag == "$tag_def" ]] && pin=$sha_def
   tmp=$(work_tmp)
-  url=$(curl -fsSL -H "$GH_UA" "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null \
-        | jq -r '[.assets[]? | select(.name | test("^cascater-.*\\.zip$"))][0].browser_download_url // empty' 2>/dev/null || true)
-  if [[ -n $url ]]; then
-    if curl -fsSL -o "$tmp/cascater.zip" "$url" 2>/dev/null && unzip -q "$tmp/cascater.zip" -d "$tmp" 2>/dev/null; then
-      downloaded=1
-    fi
-  fi
-  if (( downloaded == 0 )); then
-    curl -fsSL -H "$GH_UA" "https://codeload.github.com/$repo/tar.gz/refs/heads/main" | tar -xz -C "$tmp" --strip-components=1 || return 1
-  fi
-  [[ -f $tmp/Cascater/setup.php ]] || return 1
-  copy_plugin "$tmp/Cascater" Cascater
-  grep -oP "PLUGIN_CASCATER_VERSION', '\K[^']+" "$GLPI_DIR/plugins/Cascater/setup.php" 2>/dev/null || echo "?"
+  fetch_release_asset "$repo" "$tag" "$re" "$tmp/$dir.zip" "$pin" || return 1
+  unzip -q "$tmp/$dir.zip" -d "$tmp" || return 1
+  [[ -f $tmp/$dir/setup.php ]] || { warn "Pacote de $label sem $dir/setup.php." >&2; return 1; }
+  copy_plugin "$tmp/$dir" "$dir"
+  grep -oP "${const}', '\K[^']+" "$GLPI_DIR/plugins/$dir/setup.php" 2>/dev/null || echo "?"
+}
+
+# Baixa o Cascater (release fixada). Imprime a versão.
+fetch_cascater() {
+  fetch_own_plugin Cascater "${CASCATER_REPO:-$CASCATER_REPO_DEFAULT}" "$CASCATER_REPO_DEFAULT" \
+    "${CASCATER_TAG:-$CASCATER_TAG_DEFAULT}" "$CASCATER_TAG_DEFAULT" "$CASCATER_SHA256_DEFAULT" \
+    '^cascater-.*\.zip$' Cascater PLUGIN_CASCATER_VERSION
 }
 
 # Baixa o plugin oficial GLPI Inventory na linha compatível com o GLPI:
-# 1.6.x -> GLPI 11 | 1.5.x -> GLPI 10. Imprime a versão.
+# 1.6.x -> GLPI 11 | 1.5.x -> GLPI 10. Imprime a versão. Só o pacote da release (SHA-256 conferido).
 fetch_glpiinventory() { # fetch_glpiinventory versão_maior_do_glpi
-  local prefix tag tmp downloaded=0
+  local prefix tag tmp
   case $1 in
     11) prefix="1.6." ;;
     10) prefix="1.5." ;;
@@ -354,63 +446,32 @@ fetch_glpiinventory() { # fetch_glpiinventory versão_maior_do_glpi
         | jq -r --arg p "$prefix" '[.[] | select((.draft | not) and (.prerelease | not) and (.tag_name | startswith($p)))][0].tag_name // empty' 2>/dev/null || true)
   [[ -n $tag ]] || return 1
   tmp=$(work_tmp)
-  if curl -fsSL -o "$tmp/glpiinventory.tar.bz2" \
-    "https://github.com/glpi-project/glpi-inventory-plugin/releases/download/$tag/glpi-glpiinventory-$tag.tar.bz2" 2>/dev/null \
-    && tar -xjf "$tmp/glpiinventory.tar.bz2" -C "$tmp" 2>/dev/null; then
-    downloaded=1
-  fi
-  if (( downloaded == 0 )); then
-    mkdir -p "$tmp/glpiinventory"
-    curl -fsSL -H "$GH_UA" "https://codeload.github.com/glpi-project/glpi-inventory-plugin/tar.gz/refs/tags/$tag" \
-      | tar -xz -C "$tmp/glpiinventory" --strip-components=1 || return 1
-  fi
+  fetch_release_asset glpi-project/glpi-inventory-plugin "$tag" '^glpi-glpiinventory-.*\.tar\.bz2$' "$tmp/glpiinventory.tar.bz2" || return 1
+  tar -xjf "$tmp/glpiinventory.tar.bz2" -C "$tmp" || return 1
   [[ -f $tmp/glpiinventory/setup.php ]] || return 1
   copy_plugin "$tmp/glpiinventory" glpiinventory
   echo "$tag"
 }
 
-# Baixa o Asset Terms (termos de responsabilidade; Release mais recente ou branch principal). Imprime a versão.
+# Baixa o Asset Terms (termos de responsabilidade; release fixada). Imprime a versão.
 fetch_assetterms() {
-  local repo=${ASSETTERMS_REPO:-GustavoMS0/GLPI-AssetTerms} tmp url downloaded=0
-  tmp=$(work_tmp)
-  url=$(curl -fsSL -H "$GH_UA" "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null \
-        | jq -r '[.assets[]? | select(.name | test("^assetterms-.*\\.zip$"))][0].browser_download_url // empty' 2>/dev/null || true)
-  if [[ -n $url ]]; then
-    if curl -fsSL -o "$tmp/assetterms.zip" "$url" 2>/dev/null && unzip -q "$tmp/assetterms.zip" -d "$tmp" 2>/dev/null; then
-      downloaded=1
-    fi
-  fi
-  if (( downloaded == 0 )); then
-    curl -fsSL -H "$GH_UA" "https://codeload.github.com/$repo/tar.gz/refs/heads/main" | tar -xz -C "$tmp" --strip-components=1 || return 1
-  fi
-  [[ -f $tmp/assetterms/setup.php ]] || return 1
-  copy_plugin "$tmp/assetterms" assetterms
-  grep -oP "PLUGIN_ASSETTERMS_VERSION', '\K[^']+" "$GLPI_DIR/plugins/assetterms/setup.php" 2>/dev/null || echo "?"
+  fetch_own_plugin "Asset Terms" "${ASSETTERMS_REPO:-$ASSETTERMS_REPO_DEFAULT}" "$ASSETTERMS_REPO_DEFAULT" \
+    "${ASSETTERMS_TAG:-$ASSETTERMS_TAG_DEFAULT}" "$ASSETTERMS_TAG_DEFAULT" "$ASSETTERMS_SHA256_DEFAULT" \
+    '^assetterms-.*\.zip$' assetterms PLUGIN_ASSETTERMS_VERSION
 }
 
-# Baixa o GLPI Chatbot (assistente guiado de chamados; Release mais recente ou branch principal). Imprime a versão.
+# Baixa o GLPI Chatbot (assistente guiado de chamados; release fixada). Imprime a versão.
 fetch_chatbot() {
-  local repo=${CHATBOT_REPO:-GustavoMS0/GLPI-Chatbot} tmp url downloaded=0
   # Cópia local (ex.: versão em desenvolvimento): CHATBOT_SRC=/caminho/para/glpichatbot
   if [[ -n ${CHATBOT_SRC:-} && -f ${CHATBOT_SRC%/}/setup.php ]]; then
+    warn_plugin_source "GLPI Chatbot" "cópia local ${CHATBOT_SRC%/} (sem verificação de integridade)"
     copy_plugin "${CHATBOT_SRC%/}" glpichatbot
     grep -oP "PLUGIN_GLPICHATBOT_VERSION', '\K[^']+" "$GLPI_DIR/plugins/glpichatbot/setup.php" 2>/dev/null || echo "?"
     return 0
   fi
-  tmp=$(work_tmp)
-  url=$(curl -fsSL -H "$GH_UA" "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null \
-        | jq -r '[.assets[]? | select(.name | test("^glpichatbot-.*\\.zip$"))][0].browser_download_url // empty' 2>/dev/null || true)
-  if [[ -n $url ]]; then
-    if curl -fsSL -o "$tmp/glpichatbot.zip" "$url" 2>/dev/null && unzip -q "$tmp/glpichatbot.zip" -d "$tmp" 2>/dev/null; then
-      downloaded=1
-    fi
-  fi
-  if (( downloaded == 0 )); then
-    curl -fsSL -H "$GH_UA" "https://codeload.github.com/$repo/tar.gz/refs/heads/main" | tar -xz -C "$tmp" --strip-components=1 || return 1
-  fi
-  [[ -f $tmp/glpichatbot/setup.php ]] || return 1
-  copy_plugin "$tmp/glpichatbot" glpichatbot
-  grep -oP "PLUGIN_GLPICHATBOT_VERSION', '\K[^']+" "$GLPI_DIR/plugins/glpichatbot/setup.php" 2>/dev/null || echo "?"
+  fetch_own_plugin "GLPI Chatbot" "${CHATBOT_REPO:-$CHATBOT_REPO_DEFAULT}" "$CHATBOT_REPO_DEFAULT" \
+    "${CHATBOT_TAG:-$CHATBOT_TAG_DEFAULT}" "$CHATBOT_TAG_DEFAULT" "$CHATBOT_SHA256_DEFAULT" \
+    '^glpichatbot-.*\.zip$' glpichatbot PLUGIN_GLPICHATBOT_VERSION
 }
 
 # Remove o plugin "termoresponsabilidade", nome antigo do Asset Terms. Os termos já
@@ -522,6 +583,9 @@ create_link_rules() {
   local prio name rid ranking count=0
   while IFS='|' read -r prio name _; do
     [[ -z $prio ]] && continue
+    # Idempotente: não duplica a regra se o instalador já a criou
+    [[ -n $(db_glpi -N -e "SELECT id FROM glpi_rules WHERE sub_type = 'RuleTicket'
+        AND name = '$(sql_escape "Prioridade pela urgência: $name")' LIMIT 1") ]] && continue
     ranking=$(db_glpi -N -e "SELECT COALESCE(MAX(ranking), 0) + 1 FROM glpi_rules WHERE sub_type = 'RuleTicket'")
     rid=$(db_glpi -N -e "INSERT INTO glpi_rules
         (entities_id, sub_type, ranking, name, description, \`match\`, is_active, comment, is_recursive, uuid, \`condition\`, date_creation, date_mod)
@@ -561,6 +625,12 @@ insert_level() {
 # Calendário + SLM + 8 SLAs + 8 OLAs + 1 regra por prioridade (na abertura e na atualização)
 create_sla_ola() {
   local cal slm prio name s_tto s_ttr o_tto o_ttr id_s_tto id_s_ttr id_o_tto id_o_ttr rid ranking count=0
+  # Idempotente: se o SLM do instalador já existe, não recria calendário, SLAs, OLAs nem regras
+  if [[ -n $(db_glpi -N -e "SELECT id FROM glpi_slms WHERE name = 'Níveis de serviço (ITIL)' LIMIT 1") ]]; then
+    warn "SLAs/OLAs do instalador já existem nesta base; nada foi recriado." >&2
+    echo 0
+    return 0
+  fi
   cal=$(create_business_calendar)
   slm=$(db_glpi -N -e "INSERT INTO glpi_slms (name, entities_id, is_recursive, comment, use_ticket_calendar, calendars_id, date_creation, date_mod)
       VALUES ('Níveis de serviço (ITIL)', 0, 1, 'SLA = prazo para o usuário; OLA = prazo interno da equipe', 0, $cal, NOW(), NOW());
@@ -841,11 +911,14 @@ read_glpi_db_config() {
 # Ajusta o VirtualHost do Apache para o DocumentRoot em /public (exigência do GLPI 11)
 fix_apache_docroot() { # fix_apache_docroot diretório_glpi carimbo
   local dir=$1 ts=$2 conf changed=0
+  local -a modified=()
   for conf in /etc/apache2/sites-enabled/*.conf; do
     [[ -f $conf ]] || continue
     grep -qE "^[[:space:]]*DocumentRoot[[:space:]]+\"?$dir/?\"?[[:space:]]*$" "$conf" || continue
+    # Link para sites-available ou arquivo comum em sites-enabled: altera (e restaura) o arquivo real
     conf=$(readlink -f "$conf")
     cp -a "$conf" "$conf.bak-$ts"
+    modified+=("$conf")
     sed -i -E "s#^([[:space:]]*DocumentRoot[[:space:]]+)\"?$dir/?\"?[[:space:]]*\$#\1$dir/public#" "$conf"
     if ! grep -q 'RewriteRule \^(\.\*)\$ index\.php' "$conf"; then
       sed -i "0,/<\/VirtualHost>/s##    <Directory $dir/public>\n        Require all granted\n        RewriteEngine On\n        RewriteCond %{HTTP:Authorization} ^(.+)\$\n        RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]\n        RewriteCond %{REQUEST_FILENAME} !-f\n        RewriteRule ^(.*)\$ index.php [QSA,L]\n    </Directory>\n</VirtualHost>#" "$conf"
@@ -855,7 +928,7 @@ fix_apache_docroot() { # fix_apache_docroot diretório_glpi carimbo
   done
   a2enmod -q rewrite >/dev/null
   if ! apachectl configtest >/dev/null 2>&1; then
-    for conf in /etc/apache2/sites-available/*.bak-"$ts"; do [[ -f $conf ]] && mv "$conf" "${conf%.bak-$ts}"; done
+    for conf in "${modified[@]}"; do [[ -f $conf.bak-$ts ]] && mv "$conf.bak-$ts" "$conf"; done
     die "A configuração do Apache ficou inválida e foi restaurada. Ajuste o DocumentRoot para $dir/public manualmente."
   fi
   (( changed )) || info "Nenhum VirtualHost com DocumentRoot em $dir encontrado (já usa /public ou outro caminho)."
@@ -923,7 +996,7 @@ $( [[ $cfg == "$old"/* ]] || echo "  rm -rf \"$cfg\" && tar -xzf \"$backup/confi
 $( [[ $var == "$old"/* ]] || echo "  rm -rf \"$var\" && tar -xzf \"$backup/dados.tar.gz\" -C \"$(dirname "$var")\"")
   mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p -e 'DROP DATABASE \`$DB_NAME\`; CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
   gunzip -c "$backup/banco-$DB_NAME.sql.gz" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p "$DB_NAME"
-  for f in /etc/apache2/sites-available/*.bak-$ts /etc/nginx/sites-available/*.bak-$ts /etc/nginx/conf.d/*.bak-$ts; do [ -f "\$f" ] && mv "\$f" "\${f%.bak-$ts}"; done
+  for f in /etc/apache2/sites-available/*.bak-$ts /etc/apache2/sites-enabled/*.bak-$ts /etc/nginx/sites-available/*.bak-$ts /etc/nginx/conf.d/*.bak-$ts; do [ -f "\$f" ] && mv "\$f" "\${f%.bak-$ts}"; done
   systemctl start $WEB_SVC
 EOF
   chmod 600 "$backup/COMO-VOLTAR.txt"
@@ -935,6 +1008,8 @@ EOF
     title "7/9 Atualizando os arquivos do GLPI"
     tmp=$(work_tmp); tgz="$tmp/glpi.tgz"
     curl -fL --retry 3 --progress-bar -o "$tgz" "$GLPI_URL_TGZ" || die "Falha no download. Nada foi alterado; desative a manutenção com: php $old/bin/console maintenance:disable"
+    verify_sha256 "$tgz" "$GLPI_SHA256" "glpi-$GLPI_VERSION.tgz" \
+      || die "Pacote do GLPI com SHA-256 divergente. Nada foi alterado; desative a manutenção com: php $old/bin/console maintenance:disable"
     tar -xzf "$tgz" -C "$tmp" && [[ -f $tmp/glpi/bin/console ]] || die "Pacote do GLPI inválido."
     prev="$old.old-$ts"
     mv "$old" "$prev"
@@ -1080,7 +1155,10 @@ readonly AREA_PROFILE_RIGHTS="'document','followup','group','knowbase','password
 
 # Cria um grupo na entidade raiz (recursivo) e devolve o id
 create_group() { # create_group nome atende(0/1)
-  local q; q=$(sql_escape "$1")
+  local q id; q=$(sql_escape "$1")
+  # Idempotente: reaproveita o grupo de mesmo nome na entidade raiz
+  id=$(db_glpi -N -e "SELECT id FROM glpi_groups WHERE entities_id = 0 AND groups_id = 0 AND name = '$q' LIMIT 1")
+  if [[ -n $id ]]; then echo "$id"; return 0; fi
   db_glpi -N -e "INSERT INTO glpi_groups
       (entities_id, is_recursive, name, completename, level, groups_id,
        is_requester, is_watcher, is_assign, is_task, is_notify, is_itemgroup, is_usergroup, is_manager,
@@ -1092,6 +1170,9 @@ create_group() { # create_group nome atende(0/1)
 # Copia um perfil existente (todas as colunas e direitos) e devolve o id do novo
 clone_profile() { # clone_profile perfil_origem nome comentario
   local cols src id
+  # Idempotente: perfil com o mesmo nome já existe -> reaproveita (os direitos são reaplicados depois)
+  id=$(db_glpi -N -e "SELECT id FROM glpi_profiles WHERE name = '$(sql_escape "$2")' LIMIT 1")
+  if [[ -n $id ]]; then echo "$id"; return 0; fi
   src=$(db_glpi -N -e "SELECT id FROM glpi_profiles WHERE name = '$(sql_escape "$1")' LIMIT 1")
   [[ -n $src ]] || return 1
   cols=$(db_glpi -N -e "SELECT GROUP_CONCAT(CONCAT('\`', column_name, '\`'))
@@ -1115,6 +1196,9 @@ set_rights() { # set_rights perfil_id "nome=valor nome=valor ..."
 # Regra de negócio: requerente que faz parte do grupo -> grupo entra como requerente
 create_requester_group_rule() { # create_requester_group_rule grupo_id nome
   local rid ranking uuid
+  # Idempotente: não duplica a regra do mesmo grupo
+  [[ -n $(db_glpi -N -e "SELECT id FROM glpi_rules WHERE sub_type = 'RuleTicket'
+      AND name = '$(sql_escape "Grupo requerente: $2")' LIMIT 1") ]] && return 0
   ranking=$(db_glpi -N -e "SELECT COALESCE(MAX(ranking), 0) + 1 FROM glpi_rules WHERE sub_type = 'RuleTicket'")
   uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
   rid=$(db_glpi -N -e "INSERT INTO glpi_rules
@@ -1186,8 +1270,8 @@ add_php_repo() {
     apt-get install -y -qq software-properties-common >/dev/null
     add-apt-repository -y ppa:ondrej/php >/dev/null
   else
-    local deb=/tmp/debsuryorg-archive-keyring.deb
-    TMP_FILES+=("$deb")
+    local deb
+    deb=$(mktemp --suffix=.deb); TMP_FILES+=("$deb")
     curl -fsSLo "$deb" https://packages.sury.org/debsuryorg-archive-keyring.deb
     dpkg -i "$deb" >/dev/null
     echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $OS_CODENAME main" \
@@ -1199,13 +1283,22 @@ add_php_repo() {
 # Instala/ajusta Apache + PHP (versão exigida pelo GLPI alvo) e o php.ini recomendado
 # WEB_SERVER=apache: Apache + mod_php | WEB_SERVER=nginx: Nginx + PHP-FPM (define PHP_FPM_SOCK)
 setup_php_web() {
-local m mod d sapi ext
+local m mod d sapi ext v web_sapi
 
 PHP_VER=$(distro_php_version)
 if [[ -z $PHP_VER ]] || ! version_ge "$PHP_VER" "$PHP_MIN"; then
   warn "PHP da distribuição (${PHP_VER:-nenhum}) é inferior ao exigido ($PHP_MIN)."
   add_php_repo
-  PHP_VER="8.3"
+  # Maior versão disponível no repositório dentro da faixa suportada pelo GLPI alvo
+  PHP_VER=""
+  for v in 8.5 8.4 8.3 8.2 8.1 8.0 7.4; do
+    if version_ge "$v" "$PHP_MIN" && version_ge "$PHP_MAX" "$v" && pkg_exists "php$v-cli"; then
+      PHP_VER=$v; break
+    fi
+  done
+  [[ -n $PHP_VER ]] || die "Nenhuma versão do PHP entre $PHP_MIN e $PHP_MAX disponível no apt."
+elif ! version_ge "$PHP_MAX" "$PHP_VER"; then
+  warn "PHP da distribuição ($PHP_VER) é mais novo que o máximo testado pelo GLPI $GLPI_MAJOR ($PHP_MAX)."
 fi
 log "Versão do PHP escolhida: $PHP_VER"
 
@@ -1237,7 +1330,15 @@ else
     mod=$(basename "$m" .load)
     [[ $mod == "php$PHP_VER" ]] || a2dismod -q "$mod" >/dev/null
   done
-  a2dismod -q mpm_event >/dev/null 2>&1 || true
+  # mod_php exige o MPM prefork. A troca vale para o Apache inteiro (outros sites inclusive),
+  # então só é feita se outro MPM estiver ativo, com aviso.
+  for m in mpm_event mpm_worker; do
+    if [[ -e /etc/apache2/mods-enabled/$m.load ]]; then
+      warn "O Apache usa $m; mod_php exige mpm_prefork e a troca afeta TODOS os sites deste Apache."
+      warn "Se o servidor hospeda outros sites, considere WEB_SERVER=nginx (PHP-FPM)."
+      a2dismod -q "$m" >/dev/null 2>&1 || true
+    fi
+  done
   a2enmod -q mpm_prefork "php$PHP_VER" rewrite headers >/dev/null
 fi
 
@@ -1255,10 +1356,21 @@ for ext in bz2 exif ldap Phar zip ctype iconv apcu "Zend OPcache"; do
 done
 log "PHP $(php -r 'echo PHP_VERSION;') com todas as extensões obrigatórias"
 
-# php.ini recomendado para o GLPI
+# php.ini recomendado para o GLPI: só no SAPI que serve o GLPI (apache2 = mod_php, fpm = Nginx).
+# O CLI (cron e console) recebe apenas o fuso horário; limites e OPcache do CLI ficam os padrões.
+web_sapi=apache2; [[ $WEB_SERVER == nginx ]] && web_sapi=fpm
 for sapi in apache2 fpm cli; do
   d="/etc/php/$PHP_VER/$sapi/conf.d"
   [[ -d $d ]] || continue
+  if [[ $sapi == cli ]]; then
+    printf '; Gerado por install-glpi.sh\ndate.timezone = %s\n' "$GLPI_TZ" >"$d/99-glpi.ini"
+    continue
+  fi
+  if [[ $sapi != "$web_sapi" ]]; then
+    # Remove o arquivo de execuções anteriores do script no SAPI que não é usado
+    grep -qs '^; Gerado por install-glpi.sh' "$d/99-glpi.ini" && rm -f "$d/99-glpi.ini"
+    continue
+  fi
   cat >"$d/99-glpi.ini" <<EOF
 ; Gerado por install-glpi.sh
 memory_limit = 512M
@@ -1279,7 +1391,7 @@ opcache.max_accelerated_files = 20000
 opcache.revalidate_freq = 60
 EOF
 done
-log "php.ini ajustado (/etc/php/$PHP_VER/*/conf.d/99-glpi.ini)"
+log "php.ini ajustado (/etc/php/$PHP_VER/$web_sapi/conf.d/99-glpi.ini; CLI só com o fuso)"
 [[ $WEB_SERVER == nginx ]] && systemctl restart "php$PHP_VER-fpm"
 return 0
 }
@@ -1393,11 +1505,14 @@ detect_web_server() {
 # -----------------------------------------------------------------------------
 case "${1-}" in
   -h|--help)
-    sed -n '3,46p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,/^# ====/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
     exit 0 ;;
   "") ;;
   *)
-    [[ -r $1 ]] || die "Arquivo de configuração '$1' não encontrado."
+    [[ -r $1 && -f $1 ]] || die "Arquivo de configuração '$1' não encontrado."
+    # O arquivo é executado como root: precisa ser do root e não gravável por grupo/outros
+    [[ $(stat -Lc %u "$1") == 0 ]] || die "O arquivo de configuração '$1' precisa pertencer ao root (chown root:root '$1')."
+    (( 8#$(stat -Lc %a "$1") & 8#022 )) && die "O arquivo de configuração '$1' não pode ser gravável por grupo/outros (chmod 600 '$1')."
     # shellcheck disable=SC1090
     . "$1"
     echo "Configuração carregada de: $1" ;;
@@ -1411,7 +1526,13 @@ fi
 [[ -r /dev/tty || -n "${CONFIRM-}" ]] || die "Sem terminal interativo. Defina as variáveis de ambiente (veja o cabeçalho)."
 
 mkdir -p "$(dirname "$LOG_FILE")"
+# Log só para o root (0600) criado ANTES do tee: nunca fica legível por outros usuários
+install -m 600 /dev/null "$LOG_FILE"
+exec 3>&1 4>&2
 exec > >(tee -a "$LOG_FILE") 2>&1
+TEE_PID=$!
+# Diretório de trabalho criado no shell principal (assim é removido no fim, mesmo usado em subshells)
+work_tmp >/dev/null
 
 echo -e "${C_B}┌──────────────────────────────────────────────────────────────┐${C_N}"
 echo -e "${C_B}│        GLPI ENTERPRISE AUTOMATED INSTALLER & CONFIG          │${C_N}"
@@ -1483,11 +1604,22 @@ fi
 GLPI_URL_TGZ=${GLPI_URL_TGZ:-https://github.com/glpi-project/glpi/releases/download/$GLPI_VERSION/glpi-$GLPI_VERSION.tgz}
 GLPI_MAJOR=${GLPI_VERSION%%.*}
 
-# Requisitos por versão (documentação oficial do GLPI)
+# SHA-256 do pacote: campo "digest" do asset na API do GitHub (ou GLPI_SHA256 informado).
+# Download divergente = instalação abortada; digest indisponível = aviso.
+if [[ -z ${GLPI_SHA256-} ]]; then
+  [[ -n ${REL_JSON-} ]] || REL_JSON=$(gh_release_json glpi-project/glpi "$GLPI_VERSION")
+  GLPI_SHA256=$(digest_sha256 "$(jq -r --arg u "$GLPI_URL_TGZ" \
+    '[.assets[]? | select(.browser_download_url == $u)][0].digest // empty' <<<"${REL_JSON:-null}" 2>/dev/null || true)")
+fi
+if [[ $GLPI_URL_TGZ != https://github.com/glpi-project/glpi/releases/download/* ]]; then
+  warn "GLPI_URL_TGZ aponta para uma origem NÃO oficial: $GLPI_URL_TGZ"
+fi
+
+# Requisitos por versão (documentação oficial do GLPI). PHP_MAX = maior versão suportada.
 if (( GLPI_MAJOR >= 11 )); then
-  PHP_MIN="8.2"; MARIADB_MIN="10.6"; MYSQL_MIN="8.0"
+  PHP_MIN="8.2"; PHP_MAX="8.4"; MARIADB_MIN="10.6"; MYSQL_MIN="8.0"
 else
-  PHP_MIN="7.4"; MARIADB_MIN="10.2"; MYSQL_MIN="5.7"
+  PHP_MIN="7.4"; PHP_MAX="8.3"; MARIADB_MIN="10.2"; MYSQL_MIN="5.7"
 fi
 log "Versão estável mais recente: GLPI $GLPI_VERSION (PHP >= $PHP_MIN, MariaDB >= $MARIADB_MIN / MySQL >= $MYSQL_MIN)"
 
@@ -1555,6 +1687,35 @@ while true; do
   [[ $GLPI_PORT =~ ^[0-9]+$ ]] && (( GLPI_PORT >= 1 && GLPI_PORT <= 65535 )) && break
   warn "Porta inválida."; unset GLPI_PORT
 done
+# HTTPS: self-signed (certificado gerado aqui), custom (GLPI_TLS_CERT/GLPI_TLS_KEY) ou none.
+# Com HTTPS, a porta HTTP acima só redireciona para a HTTPS.
+# Execuções por arquivo de configuração sem GLPI_TLS mantêm o comportamento anterior (HTTP).
+if [[ -z ${GLPI_TLS+x} && -n ${CONFIRM+x} ]]; then
+  GLPI_TLS=none
+  warn "GLPI_TLS não definido no modo não interativo: GLPI só em HTTP (defina GLPI_TLS=self-signed ou custom)."
+fi
+while true; do
+  ask GLPI_TLS "HTTPS: self-signed (certificado próprio), custom (seu certificado) ou none (só HTTP)" "self-signed"
+  case ${GLPI_TLS,,} in
+    self-signed|selfsigned|s) GLPI_TLS=self-signed; break ;;
+    custom|c)                 GLPI_TLS=custom; break ;;
+    none|n|http)              GLPI_TLS=none; break ;;
+  esac
+  warn "Responda self-signed, custom ou none."; unset GLPI_TLS
+done
+if [[ $GLPI_TLS != none ]]; then
+  while true; do
+    ask GLPI_HTTPS_PORT "Porta HTTPS" "443"
+    [[ $GLPI_HTTPS_PORT =~ ^[0-9]+$ ]] && (( GLPI_HTTPS_PORT >= 1 && GLPI_HTTPS_PORT <= 65535 )) \
+      && [[ $GLPI_HTTPS_PORT != "$GLPI_PORT" ]] && break
+    warn "Porta inválida (precisa ser diferente da porta HTTP $GLPI_PORT)."; unset GLPI_HTTPS_PORT
+  done
+  if [[ $GLPI_TLS == custom ]]; then
+    ask GLPI_TLS_CERT "Caminho do certificado (PEM, com a cadeia)" ""
+    ask GLPI_TLS_KEY  "Caminho da chave privada (PEM)" ""
+    [[ -r $GLPI_TLS_CERT && -r $GLPI_TLS_KEY ]] || die "Certificado ou chave não encontrados: '$GLPI_TLS_CERT' / '$GLPI_TLS_KEY'."
+  fi
+fi
 ask GLPI_LANG "Idioma padrão do GLPI" "pt_BR"
 ask GLPI_TZ   "Fuso horário (PHP/GLPI)" "America/Sao_Paulo"
 [[ -e /usr/share/zoneinfo/$GLPI_TZ ]] || warn "Fuso '$GLPI_TZ' não encontrado em /usr/share/zoneinfo."
@@ -1568,6 +1729,21 @@ else
   ask DB_HOST "Endereço do servidor de banco" ""
   [[ -n $DB_HOST ]] || die "Endereço do banco é obrigatório."
   ask DB_PORT "Porta do banco" "3306"
+  # TLS com o banco remoto (DB_SSL=1; DB_SSL_CA = CA para validar o certificado do servidor)
+  if [[ -n ${DB_SSL+x} ]]; then
+    if [[ $DB_SSL == 1 || ${DB_SSL^^} == S ]]; then DB_SSL_YN=S; else DB_SSL_YN=N; fi
+  elif [[ -n ${CONFIRM+x} ]]; then
+    DB_SSL_YN=N   # modo não interativo: mantém o comportamento anterior
+  fi
+  ask_yn DB_SSL_YN "Usar conexão TLS com o banco remoto?" N
+  if [[ $DB_SSL_YN == S ]]; then
+    DB_SSL=1
+    [[ -z ${DB_SSL_CA+x} && -n ${CONFIRM+x} ]] && DB_SSL_CA=""
+    ask DB_SSL_CA "Caminho do certificado da CA do banco (Enter = só criptografar, sem validar)" ""
+    [[ -z $DB_SSL_CA || -r $DB_SSL_CA ]] || die "CA do banco não encontrada: $DB_SSL_CA"
+  else
+    DB_SSL=0
+  fi
 fi
 
 ask DB_ADMIN_USER "Usuário ADMINISTRADOR do banco (para criar base/usuário)" "root"
@@ -1589,6 +1765,10 @@ if [[ $DB_LOCAL == S ]]; then
   DB_USER_HOST=${DB_USER_HOST:-localhost}
 else
   ask DB_USER_HOST "Host de origem permitido para '$DB_USER' (IP deste servidor ou %)" "${DEFAULT_IP:-%}"
+  if [[ $DB_USER_HOST == *%* ]]; then
+    warn "Host '$DB_USER_HOST': o usuário '$DB_USER' poderá conectar de QUALQUER origem que alcance o banco."
+    warn "Prefira o IP deste servidor ($DEFAULT_IP) e restrinja a porta $DB_PORT no firewall do banco."
+  fi
 fi
 ask_secret DB_PASS "Senha do usuário '$DB_USER' (Enter = gerar automaticamente)" 1 1
 DB_PASS_GENERATED=N
@@ -1726,15 +1906,18 @@ ask_yn INSTALL_GLPIINVENTORY "Instalar o plugin GLPI Inventory (descoberta de re
 ask_yn INSTALL_ASSETTERMS "Instalar o plugin Asset Terms (termos de entrega e devolução com assinatura na tela)?" S
 ask_yn INSTALL_CHATBOT "Instalar o plugin GLPI Chatbot (assistente guiado de abertura de chamados)?" S
 
-if [[ $GLPI_PORT == 80 ]]; then GLPI_URL="http://$GLPI_FQDN"; else GLPI_URL="http://$GLPI_FQDN:$GLPI_PORT"; fi
+if [[ $GLPI_TLS != none ]]; then
+  if [[ $GLPI_HTTPS_PORT == 443 ]]; then GLPI_URL="https://$GLPI_FQDN"; else GLPI_URL="https://$GLPI_FQDN:$GLPI_HTTPS_PORT"; fi
+elif [[ $GLPI_PORT == 80 ]]; then GLPI_URL="http://$GLPI_FQDN"; else GLPI_URL="http://$GLPI_FQDN:$GLPI_PORT"; fi
 
 echo
 echo "  ${C_W}Resumo:${C_N}"
 echo "    GLPI ............: $GLPI_VERSION  ->  $GLPI_DIR"
 echo "    URL .............: $GLPI_URL"
+echo "    HTTPS ...........: $( [[ $GLPI_TLS == none ]] && echo "não (somente HTTP)" || echo "$GLPI_TLS na porta $GLPI_HTTPS_PORT (HTTP $GLPI_PORT redireciona)")"
 echo "    Servidor web ....: $WEB_SERVER"
 echo "    Idioma / Fuso ...: $GLPI_LANG / $GLPI_TZ"
-echo "    Banco ...........: $DB_HOST:$DB_PORT  (local: $DB_LOCAL)"
+echo "    Banco ...........: $DB_HOST:$DB_PORT  (local: $DB_LOCAL$( [[ ${DB_SSL:-0} == 1 ]] && echo ", TLS"))"
 echo "    Base / Usuário ..: $DB_NAME / $DB_USER@$DB_USER_HOST"
 echo "    Admin do banco ..: $DB_ADMIN_USER"
 echo "    Matriz ..........: $GLPI_ROOT_ENTITY"
@@ -1849,6 +2032,7 @@ done
 TGZ=$(mktemp --suffix=.tgz); TMP_FILES+=("$TGZ")
 info "Baixando $GLPI_URL_TGZ"
 curl -fL --retry 3 --progress-bar -o "$TGZ" "$GLPI_URL_TGZ" || die "Falha no download do GLPI."
+verify_sha256 "$TGZ" "$GLPI_SHA256" "glpi-$GLPI_VERSION.tgz" || die "Pacote do GLPI com SHA-256 divergente; instalação abortada."
 tar -tzf "$TGZ" >/dev/null || die "Arquivo baixado está corrompido."
 mkdir -p /var/www
 tar -xzf "$TGZ" -C /var/www/
@@ -1885,24 +2069,67 @@ log "Diretórios: config=$GLPI_CONFIG_DIR  dados=$GLPI_VAR_DIR  logs=$GLPI_LOG_D
 # -----------------------------------------------------------------------------
 title "8/11 Configurando o servidor web ($WEB_SERVER)"
 
-LISTENERS=$(ss -ltnpH "sport = :$GLPI_PORT" 2>/dev/null || true)
-if [[ -n $LISTENERS && $LISTENERS != *"\"$WEB_SVC\""* ]]; then
-  die "A porta $GLPI_PORT já está em uso por outro serviço: $LISTENERS"
+WEB_PORTS=("$GLPI_PORT")
+[[ $GLPI_TLS != none ]] && WEB_PORTS+=("$GLPI_HTTPS_PORT")
+for p in "${WEB_PORTS[@]}"; do
+  LISTENERS=$(ss -ltnpH "sport = :$p" 2>/dev/null || true)
+  if [[ -n $LISTENERS && $LISTENERS != *"\"$WEB_SVC\""* ]]; then
+    die "A porta $p já está em uso por outro serviço: $LISTENERS"
+  fi
+done
+
+# Certificado do HTTPS
+TLS_CERT=""; TLS_KEY=""
+if [[ $GLPI_TLS == self-signed ]]; then
+  TLS_CERT=/etc/ssl/glpi/glpi.crt; TLS_KEY=/etc/ssl/glpi/glpi.key
+  install -d -m 755 /etc/ssl/glpi
+  if [[ $GLPI_FQDN =~ ^[0-9.]+$ || $GLPI_FQDN == *:* ]]; then SAN="IP:$GLPI_FQDN"; else SAN="DNS:$GLPI_FQDN"; fi
+  [[ -n $DEFAULT_IP && $DEFAULT_IP != "$GLPI_FQDN" ]] && SAN+=",IP:$DEFAULT_IP"
+  (umask 077; openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
+    -keyout "$TLS_KEY" -out "$TLS_CERT" -subj "/CN=$GLPI_FQDN" -addext "subjectAltName=$SAN" >/dev/null 2>&1) \
+    || die "Falha ao gerar o certificado autoassinado."
+  chmod 600 "$TLS_KEY"; chmod 644 "$TLS_CERT"
+  log "Certificado autoassinado gerado: $TLS_CERT (válido por 825 dias; SAN $SAN)"
+elif [[ $GLPI_TLS == custom ]]; then
+  TLS_CERT=$GLPI_TLS_CERT; TLS_KEY=$GLPI_TLS_KEY
+  openssl x509 -noout -in "$TLS_CERT" 2>/dev/null || die "Certificado inválido: $TLS_CERT"
 fi
+HTTPS_SUFFIX=""; [[ ${GLPI_HTTPS_PORT:-443} == 443 ]] || HTTPS_SUFFIX=":$GLPI_HTTPS_PORT"
 
 if [[ $WEB_SERVER == nginx ]]; then
-  nginx_glpi_server "$GLPI_PORT" "$GLPI_FQDN" "$GLPI_DIR" >/etc/nginx/sites-available/glpi.conf
+  if [[ $GLPI_TLS == none ]]; then
+    nginx_glpi_server "$GLPI_PORT" "$GLPI_FQDN" "$GLPI_DIR" >/etc/nginx/sites-available/glpi.conf
+  else
+    {
+      nginx_glpi_server "$GLPI_HTTPS_PORT" "$GLPI_FQDN" "$GLPI_DIR" "$(printf '    %s\n' \
+        "listen $GLPI_HTTPS_PORT ssl;" \
+        "ssl_certificate $TLS_CERT;" \
+        "ssl_certificate_key $TLS_KEY;" \
+        "ssl_protocols TLSv1.2 TLSv1.3;")"
+      cat <<EOF
+
+# HTTP -> HTTPS
+server {
+    listen $GLPI_PORT;
+    server_name $GLPI_FQDN;
+    return 301 https://\$host$HTTPS_SUFFIX\$request_uri;
+}
+EOF
+    } >/etc/nginx/sites-available/glpi.conf
+  fi
   ln -sf /etc/nginx/sites-available/glpi.conf /etc/nginx/sites-enabled/glpi.conf
   [[ $GLPI_PORT == 80 ]] && rm -f /etc/nginx/sites-enabled/default
   nginx -t >/dev/null 2>&1 || { nginx -t; die "Configuração do Nginx inválida."; }
   systemctl enable nginx >/dev/null 2>&1
   systemctl restart nginx
-  log "Nginx: site glpi ativo na porta $GLPI_PORT (root $GLPI_DIR/public, PHP-FPM $PHP_FPM_SOCK)"
+  log "Nginx: site glpi ativo em $GLPI_URL (root $GLPI_DIR/public, PHP-FPM $PHP_FPM_SOCK)"
 else
 
-if ! grep -qE "^[[:space:]]*Listen[[:space:]]+([^[:space:]]*:)?$GLPI_PORT([[:space:]]|$)" /etc/apache2/ports.conf; then
-  echo "Listen $GLPI_PORT" >>/etc/apache2/ports.conf
-fi
+for p in "${WEB_PORTS[@]}"; do
+  if ! grep -qE "^[[:space:]]*Listen[[:space:]]+([^[:space:]]*:)?$p([[:space:]]|$)" /etc/apache2/ports.conf; then
+    echo "Listen $p" >>/etc/apache2/ports.conf
+  fi
+done
 
 if [[ -f $GLPI_DIR/public/index.php ]]; then
   DOCROOT="$GLPI_DIR/public"
@@ -1924,12 +2151,31 @@ else
     </Directory>"
 fi
 
-cat >/etc/apache2/sites-available/glpi.conf <<EOF
-# Gerado por install-glpi.sh em $(date '+%F %T')
+if [[ $GLPI_TLS == none ]]; then
+  VHOST_PORT=$GLPI_PORT; SSL_BLOCK=""; REDIRECT_VHOST=""
+else
+  a2enmod -q ssl >/dev/null
+  VHOST_PORT=$GLPI_HTTPS_PORT
+  SSL_BLOCK="    SSLEngine on
+    SSLCertificateFile $TLS_CERT
+    SSLCertificateKeyFile $TLS_KEY
+    SSLProtocol -all +TLSv1.2 +TLSv1.3
+"
+  REDIRECT_VHOST="
+# HTTP -> HTTPS
 <VirtualHost *:$GLPI_PORT>
     ServerName $GLPI_FQDN
-    DocumentRoot $DOCROOT
+    RewriteEngine On
+    RewriteRule ^/?(.*)\$ https://%{SERVER_NAME}$HTTPS_SUFFIX/\$1 [R=301,L]
+</VirtualHost>"
+fi
 
+cat >/etc/apache2/sites-available/glpi.conf <<EOF
+# Gerado por install-glpi.sh em $(date '+%F %T')
+<VirtualHost *:$VHOST_PORT>
+    ServerName $GLPI_FQDN
+    DocumentRoot $DOCROOT
+$SSL_BLOCK
 $DIR_BLOCK
 
     Header always set X-Content-Type-Options "nosniff"
@@ -1938,6 +2184,7 @@ $DIR_BLOCK
     ErrorLog \${APACHE_LOG_DIR}/glpi_error.log
     CustomLog \${APACHE_LOG_DIR}/glpi_access.log combined
 </VirtualHost>
+$REDIRECT_VHOST
 EOF
 
 [[ $GLPI_PORT == 80 ]] && a2dissite -q 000-default >/dev/null 2>&1 || true
@@ -1947,7 +2194,7 @@ grep -q '^ServerTokens' /etc/apache2/conf-available/security.conf 2>/dev/null \
 apachectl configtest >/dev/null 2>&1 || { apachectl configtest; die "Configuração do Apache inválida."; }
 systemctl enable apache2 >/dev/null 2>&1
 systemctl restart apache2
-log "VirtualHost glpi ativo na porta $GLPI_PORT (DocumentRoot $DOCROOT)"
+log "VirtualHost glpi ativo em $GLPI_URL (DocumentRoot $DOCROOT)"
 fi
 
 # -----------------------------------------------------------------------------
@@ -1961,13 +2208,48 @@ INSTALL_ARGS=(
   --db-port="$DB_PORT"
   --db-name="$DB_NAME"
   --db-user="$DB_USER"
-  --db-password="$DB_PASS"
   --default-language="$GLPI_LANG"
   --no-interaction
 )
 [[ $FORCE_DB == S ]] && INSTALL_ARGS+=(--force)
-glpi_console "${INSTALL_ARGS[@]}"
+# Senha do banco FORA da linha de comando (ps / /proc/<pid>/cmdline são legíveis por todos).
+# O console do GLPI 10/11 não lê a senha de variável de ambiente, e o prompt oculto do Symfony
+# só funciona com TTY (com stdin redirecionado o Symfony desliga a interação) e muda a ordem das
+# perguntas entre versões. Por isso: um bootstrap PHP lê a senha do stdin, acrescenta
+# --db-password=... ao $_SERVER['argv'] (que é o que o ArgvInput do Symfony usa) e carrega o
+# bin/console no mesmo processo. A senha só existe na memória do PHP. O ob_start descarta a
+# linha "#!/usr/bin/env php" do bin/console, que vira saída quando o arquivo é incluído.
+# shellcheck disable=SC2016
+printf '%s' "$DB_PASS" | runuser -u www-data -- php -r '
+  $console = $argv[1];
+  $args = array_slice($argv, 2);
+  $args[] = "--db-password=" . stream_get_contents(STDIN);
+  $_SERVER["argv"] = $GLOBALS["argv"] = array_merge([$console], $args);
+  $_SERVER["argc"] = $GLOBALS["argc"] = count($_SERVER["argv"]);
+  $_SERVER["SCRIPT_NAME"] = $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $console;
+  ob_start(function ($b) { return preg_replace("/\\A#![^\\n]*\\n/", "", $b); });
+  require $console;
+' -- "$GLPI_DIR/bin/console" "${INSTALL_ARGS[@]}" || die "db:install falhou (veja as mensagens acima)."
 log "Banco do GLPI instalado"
+
+# TLS com o banco também na aplicação: propriedades $dbssl/$dbsslca do DBmysql (GLPI 10+)
+if [[ ${DB_SSL:-0} == 1 ]]; then
+  if grep -rqs 'dbsslca' "$GLPI_DIR/src/DBmysql.php" "$GLPI_DIR/inc/dbmysql.class.php"; then
+    SSL_PHP="    public \$dbssl = true;"
+    if [[ -n ${DB_SSL_CA:-} ]]; then
+      SSL_CA_PHP=${DB_SSL_CA//\\/\\\\}; SSL_CA_PHP=${SSL_CA_PHP//\'/\\\'}   # string PHP entre '...'
+      SSL_PHP+=$'\n'"    public \$dbsslca = '$SSL_CA_PHP';"
+    fi
+    INS="$SSL_PHP" awk '{ l[NR] = $0 } /^}/ { last = NR } END { for (i = 1; i <= NR; i++) { if (i == last) print ENVIRON["INS"]; print l[i] } }' \
+      "$GLPI_CONFIG_DIR/config_db.php" >"$GLPI_CONFIG_DIR/config_db.php.new"
+    chown --reference="$GLPI_CONFIG_DIR/config_db.php" "$GLPI_CONFIG_DIR/config_db.php.new"
+    chmod --reference="$GLPI_CONFIG_DIR/config_db.php" "$GLPI_CONFIG_DIR/config_db.php.new"
+    mv "$GLPI_CONFIG_DIR/config_db.php.new" "$GLPI_CONFIG_DIR/config_db.php"
+    log "GLPI configurado para conectar no banco via TLS"
+  else
+    warn "Esta versão do GLPI não expõe \$dbssl no DBmysql; configure o TLS do banco manualmente em config_db.php."
+  fi
+fi
 
 glpi_console db:enable_timezones --no-interaction >/dev/null 2>&1 \
   && log "Suporte a timezones habilitado" \
@@ -2000,6 +2282,7 @@ title "10/11 Estrutura da empresa, categorias e plugins"
 Q_ROOT=$(sql_escape "$GLPI_ROOT_ENTITY")
 db_glpi -e "UPDATE glpi_entities SET name = '$Q_ROOT', completename = '$Q_ROOT' WHERE id = 0;"
 for b in "${BRANCHES[@]}"; do
+  [[ -n $(db_glpi -N -e "SELECT id FROM glpi_entities WHERE entities_id = 0 AND name = '$(sql_escape "$b")' LIMIT 1") ]] && continue
   db_glpi -e "INSERT INTO glpi_entities (name, entities_id, completename, level, date_creation, date_mod)
               VALUES ('$(sql_escape "$b")', 0, '$(sql_escape "$GLPI_ROOT_ENTITY > $b")', 2, NOW(), NOW());"
 done
@@ -2130,18 +2413,23 @@ log "Cron configurado: $CRON_CMD (a cada minuto)"
 
 if command -v ufw >/dev/null 2>&1; then
   UFW_STATUS=$(ufw status 2>/dev/null || true)
-  if [[ $UFW_STATUS == *"Status: active"* ]]; then ufw allow "$GLPI_PORT/tcp" >/dev/null; log "UFW: porta $GLPI_PORT liberada"; fi
+  if [[ $UFW_STATUS == *"Status: active"* ]]; then
+    for p in "${WEB_PORTS[@]}"; do ufw allow "$p/tcp" >/dev/null; done
+    log "UFW: porta(s) ${WEB_PORTS[*]} liberada(s)"
+  fi
 fi
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-  firewall-cmd --permanent --add-port="$GLPI_PORT/tcp" >/dev/null && firewall-cmd --reload >/dev/null
-  log "firewalld: porta $GLPI_PORT liberada"
+  for p in "${WEB_PORTS[@]}"; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null; done
+  firewall-cmd --reload >/dev/null
+  log "firewalld: porta(s) ${WEB_PORTS[*]} liberada(s)"
 fi
 
-HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:$GLPI_PORT/" || echo 000)
+if [[ $GLPI_TLS == none ]]; then CHECK_URL="http://127.0.0.1:$GLPI_PORT/"; else CHECK_URL="https://127.0.0.1:$GLPI_HTTPS_PORT/"; fi
+HTTP_CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 "$CHECK_URL" || echo 000)
 if [[ $HTTP_CODE =~ ^(200|302)$ ]]; then
-  log "GLPI respondendo em http://127.0.0.1:$GLPI_PORT/ (HTTP $HTTP_CODE)"
+  log "GLPI respondendo em $CHECK_URL (HTTP $HTTP_CODE)"
 else
-  warn "GLPI respondeu HTTP $HTTP_CODE. Verifique /var/log/apache2/glpi_error.log e $GLPI_LOG_DIR"
+  warn "GLPI respondeu HTTP $HTTP_CODE em $CHECK_URL. Verifique os logs do $WEB_SERVER e $GLPI_LOG_DIR"
 fi
 
 AGENT_URL="$GLPI_URL/front/inventory.php"
@@ -2193,6 +2481,12 @@ Como liberar o acesso de cada pessoa (Administração > Usuários):
 ---------------------- GLPI AGENT / INTUNE -------------------
 ServerUrl .............: $AGENT_URL
 HttpdTrust ............: $SERVER_IP
+HTTPS .................: $( case $GLPI_TLS in
+  self-signed) echo "certificado autoassinado $TLS_CERT. Distribua-o como CA confiável (perfil"
+               echo "                         de certificado do Intune) em vez de usar -NoSslCheck." ;;
+  custom)      echo "certificado próprio ($TLS_CERT)" ;;
+  *)           echo "DESATIVADO: o inventário trafega sem criptografia. Recomenda-se HTTPS." ;;
+esac )
 ===============================================================
 EOF
 chmod 600 "$INFO_FILE"
@@ -2202,8 +2496,9 @@ echo "${C_G}${C_W}  Instalação concluída com sucesso!${C_N}"
 echo
 echo "  Acesse ..............: ${C_W}$GLPI_URL${C_N}"
 echo "  Usuário .............: glpi"
+# Senhas nunca vão para a saída (que também é gravada no log): só no arquivo 0600
 if [[ $GLPI_ADMIN_PASS_GENERATED == S ]]; then
-  echo "  Senha (gerada) ......: ${C_W}$GLPI_ADMIN_PASS${C_N}"
+  echo "  Senha (gerada) ......: veja $INFO_FILE"
 else
   echo "  Senha ...............: (a que você informou)"
 fi
@@ -2222,7 +2517,12 @@ echo "  GLPI Inventory ......: $GLPIINVENTORY_STATUS"
 echo "  Asset Terms .........: $ASSETTERMS_STATUS"
 echo "  GLPI Chatbot ........: $CHATBOT_STATUS"
 echo
-echo "  Todas as credenciais foram salvas em $INFO_FILE (somente root)."
+echo "  ${C_Y}As credenciais estão em $INFO_FILE (somente root).${C_N}"
+echo "  ${C_Y}Leia, guarde as senhas em um cofre de senhas e depois apague o arquivo:${C_N}"
+echo "      sudo cat $INFO_FILE && sudo shred -u $INFO_FILE"
 echo "  Faça backup de $GLPI_CONFIG_DIR/glpicrypt.key e $GLPI_CONFIG_DIR/config_db.php."
-echo "  Recomendado: configurar HTTPS (ex.: certbot --apache) antes de uso em produção."
+case $GLPI_TLS in
+  none)        echo "  ${C_Y}HTTPS desativado: configure HTTPS (ex.: certbot --$([[ $WEB_SERVER == nginx ]] && echo nginx || echo apache)) antes de uso em produção.${C_N}" ;;
+  self-signed) echo "  HTTPS com certificado autoassinado ($TLS_CERT). Para certificado público: certbot." ;;
+esac
 echo "  Log completo: $LOG_FILE"

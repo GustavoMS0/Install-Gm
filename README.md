@@ -17,9 +17,11 @@ Scripts para colocar um **servidor GLPI** no ar em poucos minutos e fazer o **in
 
 > Você pode usar só a parte 1 (o servidor), ou só a parte 2 se já tiver um GLPI funcionando.
 
-> **Início rápido:** no servidor Linux, um único comando instala tudo (o script faz as perguntas):
+> **Início rápido:** no servidor Linux, baixe o instalador de uma **release com tag**, confira e execute (o script faz as perguntas):
 > ```bash
-> curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servidor/install-glpi.sh && sudo bash install-glpi.sh
+> VER=v1.1.0
+> curl -fsSLO "https://raw.githubusercontent.com/GustavoMS0/Install-Gm/$VER/servidor/install-glpi.sh"
+> less install-glpi.sh && sudo bash install-glpi.sh
 > ```
 > Para o modo 100% automático, sem perguntas, veja o **[guia de instalação direto do GitHub](INSTALAR-DO-GITHUB.md)**.
 
@@ -59,10 +61,14 @@ Scripts para colocar um **servidor GLPI** no ar em poucos minutos e fazer o **in
 ### Passo 1: baixar o script no servidor
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/GustavoMS0/Install-Gm/main/servidor/install-glpi.sh
+VER=v1.1.0      # release mais recente em https://github.com/GustavoMS0/Install-Gm/releases
+curl -fsSLO "https://raw.githubusercontent.com/GustavoMS0/Install-Gm/$VER/servidor/install-glpi.sh"
+less install-glpi.sh                # confira antes de rodar como root
 ```
 
-**Outras formas:** clonar o repositório inteiro (`git clone https://github.com/GustavoMS0/Install-Gm.git`) ou rodar tudo em uma linha. Todas as opções, inclusive a instalação 100% automática, estão em **[INSTALAR-DO-GITHUB.md](INSTALAR-DO-GITHUB.md)**.
+Use sempre uma tag de release (não a branch `main`) e não use `curl ... | sudo bash`.
+
+**Outras formas:** clonar o repositório na tag (`git clone --branch v1.1.0 --depth 1 https://github.com/GustavoMS0/Install-Gm.git`) ou rodar tudo em uma linha. Todas as opções, inclusive a instalação 100% automática, estão em **[INSTALAR-DO-GITHUB.md](INSTALAR-DO-GITHUB.md)**.
 
 ### Passo 2: executar
 
@@ -143,17 +149,22 @@ Ao terminar, o script mostra algo assim:
 ```
   Instalação concluída com sucesso!
 
-  Acesse ..............: http://192.168.1.50
+  Acesse ..............: https://192.168.1.50
   Usuário .............: glpi
-  Senha (gerada) ......: Xk82hQp...
-  URL p/ o GLPI Agent .: http://192.168.1.50/front/inventory.php
+  Senha (gerada) ......: veja /root/glpi-install-info.txt
+  URL p/ o GLPI Agent .: https://192.168.1.50/front/inventory.php
 ```
 
-Abra a URL no navegador e entre com o usuário `glpi`. **Todas as senhas ficam salvas em `/root/glpi-install-info.txt`**, que só o root consegue ler:
+Abra a URL no navegador e entre com o usuário `glpi`. As senhas **não** aparecem na tela nem no log: **ficam só em `/root/glpi-install-info.txt`**, que só o root consegue ler. Leia, guarde as senhas num cofre de senhas e apague o arquivo:
 
 ```bash
 sudo cat /root/glpi-install-info.txt
+sudo shred -u /root/glpi-install-info.txt
 ```
+
+**HTTPS:** o script pergunta o modo (`GLPI_TLS`): `self-signed` (padrão; gera um certificado autoassinado em `/etc/ssl/glpi/` e redireciona HTTP → HTTPS), `custom` (seu certificado, `GLPI_TLS_CERT`/`GLPI_TLS_KEY`) ou `none` (só HTTP, não recomendado). Banco remoto pode usar TLS com `DB_SSL=1` (e `DB_SSL_CA`).
+
+**Downloads verificados:** o pacote do GLPI e os plugins são conferidos pelo SHA-256 publicado na release do GitHub; os plugins próprios vêm de releases com tag fixadas no script (nunca da branch `main`).
 
 > Guarde a **URL p/ o GLPI Agent**. Ela será usada na Parte 2.
 
@@ -164,8 +175,9 @@ Para automatizar ou repetir a instalação, preencha um arquivo de configuraçã
 ```bash
 cp glpi-install.conf.example glpi-install.conf
 nano glpi-install.conf              # descomente e preencha o que quiser
+sudo chown root:root glpi-install.conf && sudo chmod 600 glpi-install.conf   # exigido pelo script
 sudo bash install-glpi.sh glpi-install.conf
-rm glpi-install.conf                # o arquivo contém senhas
+sudo shred -u glpi-install.conf     # o arquivo contém senhas
 ```
 
 Cada variável definida no arquivo deixa de ser perguntada. Se ela estiver vazia (`""`), o script usa o valor padrão ou gera uma senha. As que ficarem comentadas continuam sendo perguntadas normalmente. Veja todas as opções em [`servidor/glpi-install.conf.example`](servidor/glpi-install.conf.example) e exemplos completos em [INSTALAR-DO-GITHUB.md](INSTALAR-DO-GITHUB.md#modo-b-100-automático-com-arquivo-de-configuração).
@@ -235,7 +247,7 @@ Cada categoria já vem marcada como **incidente** (algo parou de funcionar) ou *
 ### Depois da instalação (recomendado)
 
 - **Faça backup** de `/etc/glpi/glpicrypt.key`. Sem esse arquivo, as senhas guardadas no GLPI (e-mail, LDAP etc.) não podem ser recuperadas.
-- **Configure HTTPS** se o GLPI ficar acessível fora da rede interna:
+- **Use um certificado confiável**: o modo `self-signed` criptografa, mas navegadores e agentes não confiam nele sem distribuir o certificado. Se o GLPI tiver um nome público, troque por um certificado do Let's Encrypt (ou use `GLPI_TLS=custom` com o certificado da sua CA):
   ```bash
   sudo apt install -y certbot python3-certbot-apache
   sudo certbot --apache -d glpi.suaempresa.com.br
@@ -283,7 +295,7 @@ Se ele encontrar um GLPI instalado (em `/var/www/glpi`, `/var/www/html/glpi`, `/
 
 ### Inventário e agentes
 
-O inventário (computadores, softwares, componentes) **é mantido**, e a URL do agente continua a mesma (`http://servidor:porta/front/inventory.php`). Os agentes já instalados, inclusive os distribuídos pelo Intune, continuam enviando normalmente.
+O inventário (computadores, softwares, componentes) **é mantido**, e a URL do agente continua a mesma (a atualização não muda o endereço, a porta nem o HTTPS já configurados). Os agentes já instalados, inclusive os distribuídos pelo Intune, continuam enviando normalmente.
 
 ---
 
@@ -291,24 +303,26 @@ O inventário (computadores, softwares, componentes) **é mantido**, e a URL do 
 
 ### Passo 1: gerar o pacote (em um computador Windows)
 
-1. Baixe o repositório (**Code › Download ZIP**, ou `git clone`).
+1. Baixe o repositório de uma **release com tag** (em **Releases**, *Source code (zip)*, ou `git clone --branch v1.1.0 --depth 1 ...`).
 2. Abra o **PowerShell** na pasta `intune` e rode o comando abaixo, **trocando a URL pela URL do seu servidor** (a "URL p/ o GLPI Agent" que o instalador mostrou):
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\Build-IntunePackage.ps1 -ServerUrl 'http://glpi.suaempresa.local/front/inventory.php'
+.\Build-IntunePackage.ps1 -ServerUrl 'https://glpi.suaempresa.local/front/inventory.php'
 ```
 
 Parâmetros opcionais:
 
 | Parâmetro | Padrão | Para que serve |
 |---|---|---|
-| `-ServerUrl` | *(obrigatório)* | Endereço do seu GLPI + `/front/inventory.php` |
+| `-ServerUrl` | *(obrigatório)* | Endereço do seu GLPI + `/front/inventory.php`. Use **`https://`** |
 | `-IntervalMinutes` | `30` | De quantos em quantos minutos cada computador envia o inventário |
 | `-AgentVersion` | última versão | Fixa uma versão do GLPI Agent, ex.: `1.20` |
 | `-Tag` | vazio | Etiqueta enviada no inventário (ex.: `Matriz`, `Filial-SP`), útil para regras no GLPI |
+| `-NoSslCheck` | desligado | Desliga a validação do certificado no agente. **Evite**: qualquer um na rede pode se passar pelo servidor. Com certificado autoassinado, prefira distribuir `/etc/ssl/glpi/glpi.crt` por um perfil de *certificado confiável* do Intune |
+| `-ContentPrepToolTag` | `v1.8.7` | Tag do Microsoft Win32 Content Prep Tool baixado |
 
-O script baixa sozinho o GLPI Agent e a ferramenta da Microsoft que gera o pacote. Ele cria dois arquivos em `intune\output\`:
+O script baixa sozinho o GLPI Agent (conferido pelo SHA-256 publicado na release) e a ferramenta da Microsoft que gera o pacote (de uma tag fixa, com a assinatura digital da Microsoft conferida). Ele cria dois arquivos em `intune\output\`:
 
 - `GLPI-Agent-<versão>-Intune.intunewin`: o pacote que vai para o Intune
 - `Detect-GLPIAgent.ps1`: o script de detecção, já configurado com a sua URL
@@ -378,7 +392,7 @@ Get-Content C:\ProgramData\GLPI-Agent-Intune\inventory.log -Tail 20
 O `Install-GLPIAgent.ps1` funciona em qualquer ferramenta que execute scripts como SYSTEM. Coloque o MSI na mesma pasta e informe a URL:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\Install-GLPIAgent.ps1 -ServerUrl "http://glpi.suaempresa.local/front/inventory.php"
+powershell.exe -ExecutionPolicy Bypass -File .\Install-GLPIAgent.ps1 -ServerUrl "https://glpi.suaempresa.local/front/inventory.php"
 ```
 
 ---
@@ -396,7 +410,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\Install-GLPIAgent.ps1 -ServerUrl 
 | URL do servidor para os agentes | Parâmetro `-ServerUrl` do `Build-IntunePackage.ps1` |
 | Intervalo do inventário / TAG | Parâmetros `-IntervalMinutes` / `-Tag` do `Build-IntunePackage.ps1` |
 
-> Os scripts do Intune vêm com a URL de exemplo `http://SEU-SERVIDOR-GLPI/...`. Se o pacote for publicado sem configurar a URL, a instalação para com uma mensagem de erro clara, em vez de instalar um agente apontando para lugar nenhum.
+> Os scripts do Intune vêm com a URL de exemplo `https://SEU-SERVIDOR-GLPI/...`. Se o pacote for publicado sem configurar a URL, a instalação para com uma mensagem de erro clara, em vez de instalar um agente apontando para lugar nenhum.
 
 ---
 
@@ -421,7 +435,7 @@ sed -i 's/\r$//' install-glpi.sh
 <details>
 <summary><b>"A porta 80 já está em uso por outro serviço"</b></summary>
 
-Outra aplicação (nginx, outro Apache) já usa a porta. Escolha outra, por exemplo `8080`, e use-a também na URL do agente: `http://servidor:8080/front/inventory.php`.
+Outra aplicação (nginx, outro Apache) já usa a porta. Escolha outra, por exemplo `8080`, e use-a também na URL do agente (ex.: `http://servidor:8080/front/inventory.php` sem HTTPS; com HTTPS a URL usa a porta HTTPS).
 </details>
 
 <details>

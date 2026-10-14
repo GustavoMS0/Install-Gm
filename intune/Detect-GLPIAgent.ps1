@@ -1,11 +1,11 @@
-<#
+﻿<#
 .SYNOPSIS
     Script de deteccao do Intune para o GLPI Agent.
 
 .DESCRIPTION
     Considera "instalado" somente se:
       - GLPI Agent instalado com versao >= $RequiredVersion
-      - Tarefa agendada existe
+      - Servico glpi-agent existe (parado tambem conta) e a tarefa agendada existe
       - Marcador do Intune aponta para o servidor esperado
     Se o servidor ou a versao mudarem aqui, o Intune reexecuta a instalacao.
 
@@ -13,7 +13,7 @@
     Regra do Intune: sucesso = codigo de saida 0 E alguma saida em STDOUT.
 #>
 $RequiredVersion   = '1.19'
-$ExpectedServerUrl = 'http://SEU-SERVIDOR-GLPI/front/inventory.php'
+$ExpectedServerUrl = 'https://SEU-SERVIDOR-GLPI/front/inventory.php'
 $TaskName          = 'GLPI_Inventario_Forcado'
 
 function ConvertTo-Version([string]$Text) {
@@ -32,11 +32,13 @@ if (-not $agent) { exit 1 }
 if ((ConvertTo-Version $agent.DisplayVersion) -lt (ConvertTo-Version $RequiredVersion)) { exit 1 }
 if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) { exit 1 }
 
+# Deteccao confirma a INSTALACAO: o servico precisa existir, mas nao precisa estar rodando
+# (um servico parado por instantes faria o Intune reinstalar o app sem necessidade).
 $svc = Get-Service -Name 'glpi-agent' -ErrorAction SilentlyContinue
 if (-not $svc) { exit 1 }
 
 $marker = Get-ItemProperty -Path 'HKLM:\SOFTWARE\GLPI-Agent-Intune' -ErrorAction SilentlyContinue
 if (-not $marker -or $marker.ServerUrl -ne $ExpectedServerUrl) { exit 1 }
 
-Write-Output "GLPI Agent $($agent.DisplayVersion) instalado, servico ativo e tarefa '$TaskName' presente"
+Write-Output "GLPI Agent $($agent.DisplayVersion) instalado, servico glpi-agent presente (estado: $($svc.Status)) e tarefa '$TaskName' presente"
 exit 0

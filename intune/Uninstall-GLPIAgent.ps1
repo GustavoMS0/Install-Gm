@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Remove a tarefa agendada, o GLPI Agent e os arquivos criados pelo pacote Intune.
 
