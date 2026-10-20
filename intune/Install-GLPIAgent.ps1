@@ -9,7 +9,7 @@
          - testa se o servidor GLPI responde (TCP na porta da URL)
          - executa "glpi-agent --force" e registra log
     4. Registra a tarefa agendada "GLPI_Inventario_Forcado" como SYSTEM
-       a cada N minutos (padrao 30) e na inicializacao
+       a cada N minutos (padrao 240 / 4h) e na inicializacao
     5. Grava marcador em HKLM:\SOFTWARE\GLPI-Agent-Intune usado pela deteccao
 
     Comando de instalacao no Intune:
@@ -25,7 +25,7 @@
 param(
     [string]$ServerUrl       = 'https://SEU-SERVIDOR-GLPI/front/inventory.php',
     [string]$HttpdTrust      = '',   # vazio = IP/host extraido da ServerUrl
-    [int]   $IntervalMinutes = 30,
+    [int]   $IntervalMinutes = 240,
     [string]$Tag             = '',   # TAG opcional do inventario (ex.: filial)
     [string]$TaskName        = 'GLPI_Inventario_Forcado',
     [switch]$NoSslCheck              # Desativa a validacao do certificado (evite: prefira distribuir a CA do servidor via Intune)
@@ -190,7 +190,7 @@ try {
             'ADDLOCAL=ALL',
             'EXECMODE=1',
             'SCAN_HOMEDIRS=0',
-            'ADD_FIREWALL_EXCEPTION=1',
+            'ADD_FIREWALL_EXCEPTION=0',
             "HTTPD_TRUST=`"$HttpdTrust`"",
             '/L*V', "`"$msiLog`""
         )
