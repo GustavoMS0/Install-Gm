@@ -1270,11 +1270,10 @@ add_php_repo() {
     apt-get install -y -qq software-properties-common >/dev/null
     add-apt-repository -y ppa:ondrej/php >/dev/null
   else
-    local deb
-    deb=$(mktemp --suffix=.deb); TMP_FILES+=("$deb")
-    curl -fsSLo "$deb" https://packages.sury.org/debsuryorg-archive-keyring.deb
-    dpkg -i "$deb" >/dev/null
-    echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $OS_CODENAME main" \
+    install -d -m 0755 /etc/apt/keyrings
+    curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor --yes -o /etc/apt/keyrings/php-sury.gpg
+    chmod 644 /etc/apt/keyrings/php-sury.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/php-sury.gpg] https://packages.sury.org/php/ $OS_CODENAME main" \
       >/etc/apt/sources.list.d/php-sury.list
   fi
   apt-get update -qq
@@ -1610,6 +1609,12 @@ if [[ -z ${GLPI_SHA256-} ]]; then
   [[ -n ${REL_JSON-} ]] || REL_JSON=$(gh_release_json glpi-project/glpi "$GLPI_VERSION")
   GLPI_SHA256=$(digest_sha256 "$(jq -r --arg u "$GLPI_URL_TGZ" \
     '[.assets[]? | select(.browser_download_url == $u)][0].digest // empty' <<<"${REL_JSON:-null}" 2>/dev/null || true)")
+  if [[ -z $GLPI_SHA256 ]]; then
+    sha_asset_url=$(jq -r '[.assets[]? | select(.name | test("^glpi-.*\\.tgz\\.sha256$"))][0].browser_download_url // empty' <<<"${REL_JSON:-null}" 2>/dev/null || true)
+    if [[ -n $sha_asset_url ]]; then
+      GLPI_SHA256=$(curl -fsSL --retry 3 "$sha_asset_url" 2>/dev/null | awk '{print $1}' || true)
+    fi
+  fi
 fi
 if [[ $GLPI_URL_TGZ != https://github.com/glpi-project/glpi/releases/download/* ]]; then
   warn "GLPI_URL_TGZ aponta para uma origem NÃO oficial: $GLPI_URL_TGZ"
@@ -2105,7 +2110,8 @@ if [[ $WEB_SERVER == nginx ]]; then
         "listen $GLPI_HTTPS_PORT ssl;" \
         "ssl_certificate $TLS_CERT;" \
         "ssl_certificate_key $TLS_KEY;" \
-        "ssl_protocols TLSv1.2 TLSv1.3;")"
+        "ssl_protocols TLSv1.2 TLSv1.3;" \
+        "add_header Strict-Transport-Security 'max-age=31536000; includeSubDomains' always;")"
       cat <<EOF
 
 # HTTP -> HTTPS
@@ -2180,6 +2186,7 @@ $DIR_BLOCK
 
     Header always set X-Content-Type-Options "nosniff"
     Header always set X-Frame-Options "SAMEORIGIN"
+$([[ $GLPI_TLS != none ]] && echo '    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"')
 
     ErrorLog \${APACHE_LOG_DIR}/glpi_error.log
     CustomLog \${APACHE_LOG_DIR}/glpi_access.log combined
@@ -2272,6 +2279,13 @@ if [[ $DISABLE_DEFAULT_USERS == S ]]; then
   db_glpi -e "UPDATE glpi_users SET is_active = 0 WHERE name IN ('tech','normal','post-only');"
   log "Usuários padrão tech, normal e post-only desativados"
 fi
+
+# Hardening de permissões nos arquivos de configuração do GLPI
+chown root:root "$GLPI_CONFIG_DIR"
+chmod 750 "$GLPI_CONFIG_DIR"
+chown root:www-data "$GLPI_CONFIG_DIR"/*.php "$GLPI_CONFIG_DIR"/glpicrypt.key 2>/dev/null || true
+chmod 640 "$GLPI_CONFIG_DIR"/*.php "$GLPI_CONFIG_DIR"/glpicrypt.key 2>/dev/null || true
+log "Permissões de arquivos em $GLPI_CONFIG_DIR protegidas (640 root:www-data)"
 
 # -----------------------------------------------------------------------------
 # 8. Estrutura da empresa, categorias e plugins
